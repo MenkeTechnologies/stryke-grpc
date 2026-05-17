@@ -1,0 +1,14 @@
+#!/usr/bin/env stryke
+# examples/call_unary.stk — unary call.
+# Run:   s examples/call_unary.stk localhost:50051 helloworld.Greeter/SayHello '{"name":"stryke"}'
+
+use Grpc
+
+my ($target, $method, $data_json) = @ARGV
+die "usage: call_unary.stk HOST:PORT pkg.Service/Method '<json>'\n"
+    unless defined $method
+
+$data_json //= "{}"
+my $reply = Grpc::call($method, from_json($data_json),
+                       target => $target, plaintext => 1)
+p "response: " . to_json($reply)

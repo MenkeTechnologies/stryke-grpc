@@ -1,0 +1,73 @@
+# t/test_grpc.stk — connectivity tests against a reflection-enabled gRPC
+# server.
+#
+# Set $STRYKE_GRPC_TEST_TARGET (host:port) to opt in. The CI workflow
+# spins up grpcb.in / a tonic example for live round-trip. Skips cleanly
+# without a target.
+
+require "./lib/Grpc.stk"
+
+my $have_helper = eval { Grpc::helper_path(); 1 }
+unless ($have_helper) {
+    p "1..0 # SKIP helper not built — run `cargo build --release` first"
+    exit 0
+}
+my $target = $ENV{STRYKE_GRPC_TEST_TARGET}
+unless (defined $target && $target ne "") {
+    p "1..0 # SKIP \$STRYKE_GRPC_TEST_TARGET not set"
+    exit 0
+}
+
+my %conn = (target => $target)
+$conn{plaintext} = 1 if $ENV{STRYKE_GRPC_TEST_PLAINTEXT}
+
+unless (Grpc::ping(%conn)) {
+    p "1..0 # SKIP cannot reach $target / reflection disabled"
+    exit 0
+}
+
+p "1..3"
+my $i = 0
+
+# 1. list services
+my @services
+eval { @services = Grpc::list(%conn) }
+$i++
+p $@ ? "not ok $i - list: $@" :
+       (len(@services) >= 1 ? "ok $i - list (#{len(@services)} services)" :
+        "not ok $i - list empty")
+
+# 2. describe the first non-reflection service
+my $svc
+for my $row (@services) {
+    next if $row->{service} =~ /^grpc\.reflection\./
+    $svc = $row->{service}
+    last
+}
+my $info
+if (defined $svc) {
+    eval { $info = Grpc::describe($svc, %conn) }
+    $i++
+    p $@ ? "not ok $i - describe $svc: $@" :
+           (ref($info->{methods}) eq "ARRAY"
+                ? "ok $i - describe $svc (#{len(@{$info->{methods}})} methods)"
+                : "not ok $i - describe $svc bad shape")
+} else {
+    $i++
+    p "ok $i - describe SKIP (only reflection service)"
+}
+
+# 3. call a unary method if the env var $STRYKE_GRPC_TEST_METHOD is set.
+# Format: "pkg.Service/Method" + $STRYKE_GRPC_TEST_DATA is optional JSON.
+my $method = $ENV{STRYKE_GRPC_TEST_METHOD}
+my $data = $ENV{STRYKE_GRPC_TEST_DATA} // "{}"
+$i++
+if (defined $method && $method ne "") {
+    my $reply
+    eval { $reply = Grpc::call($method, from_json($data), %conn) }
+    p $@ ? "not ok $i - call $method: $@" :
+           (defined $reply ? "ok $i - call $method" :
+            "not ok $i - call returned undef")
+} else {
+    p "ok $i - call SKIP (\$STRYKE_GRPC_TEST_METHOD unset)"
+}

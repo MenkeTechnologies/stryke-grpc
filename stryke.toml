@@ -1,0 +1,19 @@
+[package]
+name = "grpc"
+version = "0.1.0"
+description = "Generic gRPC client for stryke. Reflection-based service discovery + JSON-in/JSON-out unary calls — like grpcurl but as a stryke package."
+authors = ["MenkeTechnologies"]
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/stryke-grpc"
+edition = "2026"
+
+[bin]
+grpc = "bin/grpc.stk"
+grpc-build = "bin/grpc-build.stk"
+
+[scripts]
+build = "cargo build --release"
+build-debug = "cargo build"
+clean = "cargo clean"
+test = "s test t/"
+install = "s pkg install -g ."

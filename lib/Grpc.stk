@@ -1,0 +1,191 @@
+# lib/Grpc.stk — generic gRPC client for stryke.
+#
+# Reflection-based — works against any server with the standard
+# `grpc.reflection.v1alpha.ServerReflection` endpoint enabled (which is
+# the default for most dev / pre-prod gRPC servers). No .proto required
+# on the stryke side; the helper pulls FileDescriptorProtos from the
+# server at call time.
+#
+# Connection options every public fn accepts (hashref-internal pattern
+# to work around stryke's %opts-reslurp issue):
+#   target      host:port (or http://host:port / https://host:port)  REQUIRED
+#   plaintext   1 to force HTTP/2 cleartext (no TLS)
+#   insecure    1 to accept any server certificate
+#   authority   override the SNI hostname during TLS validation
+#   headers     arrayref or hashref of metadata ("k:v" pairs / k=>v)
+#   timeout_s   default 30
+
+package Grpc
+
+our $HELPER
+
+fn Grpc::pkg_root {
+    my @parts = split "/", __FILE__
+    pop @parts
+    pop @parts
+    my $root = join "/", @parts
+    $root ne "" ? $root : "."
+}
+
+fn Grpc::helper_path {
+    return $Grpc::HELPER if defined $Grpc::HELPER && -x $Grpc::HELPER
+
+    if (exists $ENV{STRYKE_GRPC_HELPER} && $ENV{STRYKE_GRPC_HELPER} ne "") {
+        my $p = $ENV{STRYKE_GRPC_HELPER}
+        die "stryke-grpc: STRYKE_GRPC_HELPER=$p is not an executable file" unless -x $p
+        $Grpc::HELPER = $p
+        return $p
+    }
+
+    my $root = Grpc::pkg_root()
+    for my $cand (
+        "$root/target/release/stryke-grpc-helper",
+        "$root/target/debug/stryke-grpc-helper",
+        "$root/bin/stryke-grpc-helper",
+    ) {
+        if (-x $cand) {
+            $Grpc::HELPER = $cand
+            return $cand
+        }
+    }
+
+    my $which = qx{command -v stryke-grpc-helper 2>/dev/null}
+    chomp $which
+    if ($which ne "" && -x $which) {
+        $Grpc::HELPER = $which
+        return $which
+    }
+
+    die "stryke-grpc: helper binary not found.\n" .
+        "  Build it once with:  cd $root && cargo build --release\n" .
+        "  Or set STRYKE_GRPC_HELPER=/path/to/stryke-grpc-helper\n"
+}
+
+fn Grpc::ensure_built {
+    my $root = Grpc::pkg_root()
+    for my $cand ("$root/target/release/stryke-grpc-helper",
+                  "$root/target/debug/stryke-grpc-helper") {
+        return $cand if -x $cand
+    }
+    return Grpc::helper_path() if exists $ENV{STRYKE_GRPC_HELPER}
+
+    p "stryke-grpc: building helper (cargo build --release)..."
+    my $rc = system "cd " . Grpc::_shq($root) . " && cargo build --release"
+    die "stryke-grpc: cargo build failed (rc=$rc)" if $rc != 0
+    Grpc::helper_path()
+}
+
+fn Grpc::_shq ($s) {
+    my $t = $s
+    $t =~ s/'/'\\''/g
+    "'$t'"
+}
+
+# Build helper + global connection flags + positional <target>. $o hashref.
+# Returns @argv minus the final subcommand args.
+fn Grpc::_conn_argv ($o) {
+    die "stryke-grpc: `target => host:port` is required" unless defined $o->{target}
+    my @argv = (Grpc::_shq(Grpc::helper_path()))
+
+    push @argv, "--plaintext" if $o->{plaintext}
+    push @argv, "--insecure"  if $o->{insecure}
+    push @argv, "--authority", Grpc::_shq($o->{authority}) if defined $o->{authority}
+    push @argv, "--timeout-s", Grpc::_shq($o->{timeout_s}) if defined $o->{timeout_s}
+
+    if (defined $o->{headers}) {
+        if (ref($o->{headers}) eq "HASH") {
+            for my $k (sort keys %{ $o->{headers} }) {
+                my $v = $o->{headers}{$k}
+                push @argv, "--header", Grpc::_shq("$k:$v")
+            }
+        } elsif (ref($o->{headers}) eq "ARRAY") {
+            for my $kv (@{ $o->{headers} }) {
+                push @argv, "--header", Grpc::_shq($kv)
+            }
+        }
+    }
+
+    push @argv, Grpc::_shq($o->{target})
+    @argv
+}
+
+fn Grpc::_drain_ndjson ($fh) {
+    my @rows
+    while (my $line = <$fh>) {
+        chomp $line
+        next if $line eq ""
+        push @rows, from_json $line
+    }
+    @rows
+}
+
+fn Grpc::_run_ndjson ($argv) {
+    my $cmd = join " ", @$argv
+    if ($ENV{STRYKE_GRPC_DEBUG}) {
+        warn "DEBUG grpc cmd: $cmd\n"
+    }
+    open my $fh, "-|", $cmd or die "stryke-grpc: spawn failed: $!"
+    my @rows = Grpc::_drain_ndjson $fh
+    close $fh or die "stryke-grpc: helper exited ($?)"
+    @rows
+}
+
+fn Grpc::_run_json ($argv) {
+    my $cmd = join " ", @$argv
+    if ($ENV{STRYKE_GRPC_DEBUG}) {
+        warn "DEBUG grpc cmd: $cmd\n"
+    }
+    my $out = qx{$cmd}
+    die "stryke-grpc: helper exited ($?)" if $? != 0
+    from_json $out
+}
+
+fn Grpc::version {
+    my $bin = Grpc::_shq(Grpc::helper_path())
+    my $v = qx{$bin --version 2>&1}
+    chomp $v
+    $v
+}
+
+# Returns truthy if the server's reflection endpoint responds.
+fn Grpc::ping (%opts) {
+    my @argv = Grpc::_conn_argv(\%opts)
+    push @argv, "ping"
+    my $cmd = join " ", @argv
+    my $out = qx{$cmd 2>/dev/null}
+    $? == 0 && $out =~ /"service"/
+}
+
+# ---------------------------------------------------------------------------
+# Public surface
+# ---------------------------------------------------------------------------
+
+# Returns an array of `{ service: "pkg.Name" }` rows.
+fn Grpc::list (%opts) {
+    my @argv = Grpc::_conn_argv(\%opts)
+    push @argv, "list"
+    Grpc::_run_ndjson(\@argv)
+}
+
+# Returns a single JSON object describing a service, method, or message.
+# $symbol forms:
+#   "pkg.Service"         → service info + method list
+#   "pkg.Service/Method"  → method info + input fields
+#   "pkg.MessageType"     → message info + field list
+fn Grpc::describe ($symbol, %opts) {
+    my @argv = Grpc::_conn_argv(\%opts)
+    push @argv, "describe", Grpc::_shq($symbol)
+    Grpc::_run_json(\@argv)
+}
+
+# Unary call. $method is `pkg.Service/Method`. $request is any
+# stryke-encodable value that maps to the method's input message; we
+# `to_json` it and let the helper deserialize into a DynamicMessage.
+# Returns the response as a parsed JSON value (typically a hashref).
+fn Grpc::call ($method, $request, %opts) {
+    my @argv = Grpc::_conn_argv(\%opts)
+    push @argv, "call", Grpc::_shq($method), "--data", Grpc::_shq(to_json $request)
+    Grpc::_run_json(\@argv)
+}
+
+1

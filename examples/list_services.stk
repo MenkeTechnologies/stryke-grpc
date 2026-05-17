@@ -1,0 +1,16 @@
+#!/usr/bin/env stryke
+# examples/list_services.stk — list services via reflection.
+# Run:   s examples/list_services.stk localhost:50051 --plaintext
+
+use Grpc
+
+my $target = $ARGV[0]
+die "usage: list_services.stk HOST:PORT [--plaintext]\n" unless defined $target
+
+my %opts = (target => $target)
+for my $arg (@ARGV[1..$#ARGV]) {
+    $opts{plaintext} = 1 if $arg eq "--plaintext"
+}
+
+my @services = Grpc::list(%opts)
+p "$_->{service}" for @services

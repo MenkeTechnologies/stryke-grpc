@@ -1,0 +1,11 @@
+#!/usr/bin/env stryke
+# examples/describe_service.stk — show methods + input fields.
+# Run:   s examples/describe_service.stk localhost:50051 helloworld.Greeter
+
+use Grpc
+
+my ($target, $symbol) = @ARGV
+die "usage: describe_service.stk HOST:PORT SERVICE_OR_METHOD\n" unless defined $symbol
+
+my $info = Grpc::describe($symbol, target => $target, plaintext => 1)
+p to_json($info)
