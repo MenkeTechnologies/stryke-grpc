@@ -1,13 +1,49 @@
-# stryke-grpc
+```
+ ███████╗████████╗██████╗ ██╗   ██╗██╗  ██╗███████╗
+ ██╔════╝╚══██╔══╝██╔══██╗╚██╗ ██╔╝██║ ██╔╝██╔════╝
+ ███████╗   ██║   ██████╔╝ ╚████╔╝ █████╔╝ █████╗
+ ╚════██║   ██║   ██╔══██╗  ╚██╔╝  ██╔═██╗ ██╔══╝
+ ███████║   ██║   ██║  ██║   ██║   ██║  ██╗███████╗
+ ╚══════╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝
+                   [ g r p c ]
+```
+
+[![CI](https://github.com/MenkeTechnologies/stryke-grpc/actions/workflows/ci.yml/badge.svg)](https://github.com/MenkeTechnologies/stryke-grpc/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![stryke](https://img.shields.io/badge/stryke-package-cyan.svg)](https://github.com/MenkeTechnologies/strykelang)
+
+### `[REFLECTION-BASED gRPC CLIENT FOR STRYKE // grpcurl, but as a stryke package]`
+
+> *"Describe, call, decode — all over NDJSON."*
 
 Generic, reflection-based gRPC client for stryke — list services,
 describe methods, call unary RPCs with JSON in/out. Like
 [`grpcurl`](https://github.com/fullstorydev/grpcurl) but as a stryke
 package, NDJSON-friendly, and statically linked. Opt-in package tier.
 
-Created by MenkeTechnologies.
+### [`strykelang`](https://github.com/MenkeTechnologies/strykelang) &middot; [`MenkeTechnologiesMeta`](https://github.com/MenkeTechnologies/MenkeTechnologiesMeta) · [`stryke-aws`](https://github.com/MenkeTechnologies/stryke-aws) · [`stryke-k8s`](https://github.com/MenkeTechnologies/stryke-k8s) · [`stryke-demo`](https://github.com/MenkeTechnologies/stryke-demo)
 
-## Why this is a package, not a builtin
+---
+
+## Table of Contents
+
+- [\[0x00\] Why this is a package, not a builtin](#0x00-why-this-is-a-package-not-a-builtin)
+- [\[0x01\] Install](#0x01-install)
+- [\[0x02\] Quick start](#0x02-quick-start)
+- [\[0x03\] CLI: `grpc`](#0x03-cli-grpc)
+- [\[0x04\] API reference](#0x04-api-reference)
+- [\[0x05\] Helper protocol](#0x05-helper-protocol)
+- [\[0x06\] How reflection works](#0x06-how-reflection-works)
+- [\[0x07\] Scope (v1)](#0x07-scope-v1)
+- [\[0x08\] Tests](#0x08-tests)
+- [\[0x09\] Local test server](#0x09-local-test-server)
+- [\[0x0A\] Dev workflow](#0x0a-dev-workflow)
+- [\[0x0B\] Layout](#0x0b-layout)
+- [\[0xFF\] License](#0xff-license)
+
+---
+
+## [0x00] Why this is a package, not a builtin
 
 Every gRPC client pulls in tonic + prost + tokio + hyper + rustls + a
 file-descriptor reflection stack. ~30+ transitive crates. Useful when
@@ -20,7 +56,7 @@ for the target server — as long as reflection is enabled (default in
 most dev / pre-prod stacks; opt-in with one Tonic builder line for
 production).
 
-## Install
+## [0x01] Install
 
 ```sh
 cd ~/projects/stryke-grpc
@@ -34,7 +70,7 @@ Or:
 make install
 ```
 
-## Quick start
+## [0x02] Quick start
 
 ```stryke
 use Grpc
@@ -78,7 +114,7 @@ Connection options every public fn understands:
 | `headers` | hashref `{k=>v}` or arrayref `["k:v",...]` — sent as gRPC metadata |
 | `timeout_s` | default 30 |
 
-## CLI: `grpc`
+## [0x03] CLI: `grpc`
 
 ```sh
 grpc localhost:50051 --plaintext list
@@ -106,7 +142,7 @@ Global flags:
 --timeout-s SECS       default: 30
 ```
 
-## API reference
+## [0x04] API reference
 
 ### `use Grpc`
 
@@ -134,7 +170,7 @@ default.
 
 `Grpc::helper_path()`, `Grpc::ensure_built()`.
 
-## Helper protocol
+## [0x05] Helper protocol
 
 ```sh
 stryke-grpc-helper <host:port> [global flags] <subcommand> [args]
@@ -149,7 +185,7 @@ Output:
 
 Errors print to stderr, exit non-zero.
 
-## How reflection works
+## [0x06] How reflection works
 
 On each `list` / `describe` / `call` invocation, the helper:
 
@@ -168,7 +204,7 @@ No `.proto` files on disk — everything is fetched at call time.
 If your server hides reflection in production, enable it on a
 dev/canary box (one line for tonic, similar for grpc-go / grpc-java).
 
-## Scope (v1)
+## [0x07] Scope (v1)
 
 | Capability | Status |
 |---|---|
@@ -182,7 +218,7 @@ dev/canary box (one line for tonic, similar for grpc-go / grpc-java).
 | `--proto FILE` fallback when reflection is off | deferred v2 |
 | mTLS (client cert) | deferred v2 |
 
-## Tests
+## [0x08] Tests
 
 ```sh
 cargo test                                          # compiles, no live calls
@@ -203,7 +239,7 @@ STRYKE_GRPC_TEST_DATA       JSON payload for the call test (default `{}`)
 The CI workflow brings up a `tonic`-based reflection-enabled echo
 server and exercises list / describe / call against it.
 
-## Local test server
+## [0x09] Local test server
 
 The smallest reflection-enabled gRPC server is a few lines of Go or
 Rust. For Rust, the [`tonic`
@@ -214,7 +250,7 @@ For zero-setup smoke testing, public reflection-enabled servers exist
 (grpcb.in's `:9000`), but they come and go — prefer running a local
 server.
 
-## Dev workflow
+## [0x0A] Dev workflow
 
 ```sh
 make             # release build
@@ -224,7 +260,7 @@ make install
 make clean
 ```
 
-## Layout
+## [0x0B] Layout
 
 ```
 stryke-grpc/
@@ -255,6 +291,6 @@ stryke-grpc/
     release.yml                    # cross-compile + GH release on tag push
 ```
 
-## License
+## [0xFF] License
 
 MIT.
