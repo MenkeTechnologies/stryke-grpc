@@ -91,6 +91,66 @@ fn split_method(method: &str) -> Result<(String, String)> {
     Ok((svc.to_string(), m.to_string()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── split_method ────────────────────────────────────────────────
+
+    #[test]
+    fn split_method_slash_separator() {
+        let (s, m) = split_method("pkg.Service/Method").unwrap();
+        assert_eq!(s, "pkg.Service");
+        assert_eq!(m, "Method");
+    }
+
+    #[test]
+    fn split_method_falls_back_to_rsplit_dot() {
+        // No '/' → rsplit_once('.') so the LAST dot becomes the boundary,
+        // letting nested packages work (a.b.c.Service.Method).
+        let (s, m) = split_method("a.b.c.Service.Method").unwrap();
+        assert_eq!(s, "a.b.c.Service");
+        assert_eq!(m, "Method");
+    }
+
+    #[test]
+    fn split_method_slash_wins_over_dot() {
+        // If slash present, '/' splits regardless of '.'s before/after.
+        let (s, m) = split_method("a.b/c.d").unwrap();
+        assert_eq!(s, "a.b");
+        assert_eq!(m, "c.d");
+    }
+
+    #[test]
+    fn split_method_neither_separator_errors() {
+        let err = split_method("noseparator").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("pkg.Service/Method"));
+        assert!(msg.contains("noseparator"));
+    }
+
+    #[test]
+    fn split_method_empty_string_errors() {
+        let err = split_method("").unwrap_err();
+        assert!(format!("{err}").contains("pkg.Service/Method"));
+    }
+
+    #[test]
+    fn split_method_only_slash_yields_empty_halves() {
+        // Liberal — pinning current behavior.
+        let (s, m) = split_method("/").unwrap();
+        assert_eq!(s, "");
+        assert_eq!(m, "");
+    }
+
+    #[test]
+    fn split_method_only_dot_yields_empty_halves() {
+        let (s, m) = split_method(".").unwrap();
+        assert_eq!(s, "");
+        assert_eq!(m, "");
+    }
+}
+
 async fn describe(channel: tonic::transport::Channel, symbol: &str) -> Result<()> {
     let pool = reflection::build_pool(channel, symbol).await?;
     if let Some(svc) = pool.get_service_by_name(symbol) {

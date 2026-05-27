@@ -94,3 +94,103 @@ pub fn emit_ndjson_line<T: serde::Serialize, W: Write>(w: &mut W, v: &T) -> Resu
     w.write_all(b"\n")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(headers: Vec<&str>) -> Target {
+        Target {
+            target: "localhost:50051".into(),
+            plaintext: true,
+            insecure: false,
+            authority: None,
+            headers: headers.into_iter().map(String::from).collect(),
+            timeout_s: 30,
+        }
+    }
+
+    // ─── Target::metadata ────────────────────────────────────────────
+
+    #[test]
+    fn metadata_empty_headers_yields_empty_map() {
+        let m = target(vec![]).metadata().unwrap();
+        assert_eq!(m.len(), 0);
+    }
+
+    #[test]
+    fn metadata_colon_separator() {
+        let m = target(vec!["x-trace-id:abc123"]).metadata().unwrap();
+        assert_eq!(
+            m.get("x-trace-id").map(|v| v.to_str().unwrap()),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn metadata_equals_separator() {
+        let m = target(vec!["x-user=alice"]).metadata().unwrap();
+        assert_eq!(
+            m.get("x-user").map(|v| v.to_str().unwrap()),
+            Some("alice")
+        );
+    }
+
+    #[test]
+    fn metadata_colon_wins_when_both_present() {
+        // split_once(':') runs first via `or_else`; '=' only used as fallback.
+        let m = target(vec!["k:a=b"]).metadata().unwrap();
+        assert_eq!(m.get("k").map(|v| v.to_str().unwrap()), Some("a=b"));
+    }
+
+    #[test]
+    fn metadata_trims_whitespace_around_key_and_value() {
+        let m = target(vec!["  x-foo : bar  "]).metadata().unwrap();
+        assert_eq!(m.get("x-foo").map(|v| v.to_str().unwrap()), Some("bar"));
+    }
+
+    #[test]
+    fn metadata_missing_separator_errors() {
+        let err = target(vec!["malformed-no-separator"]).metadata().unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("malformed-no-separator"));
+        assert!(msg.contains("k=v") || msg.contains("k:v"));
+    }
+
+    #[test]
+    fn metadata_invalid_header_name_errors() {
+        // Spaces aren't valid in ASCII metadata keys.
+        let err = target(vec!["bad name:value"]).metadata().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("invalid header") || msg.to_lowercase().contains("name"));
+    }
+
+    #[test]
+    fn metadata_multiple_headers_all_present() {
+        let m = target(vec!["a:1", "b:2", "c=3"]).metadata().unwrap();
+        assert_eq!(m.len(), 3);
+        assert_eq!(m.get("a").map(|v| v.to_str().unwrap()), Some("1"));
+        assert_eq!(m.get("b").map(|v| v.to_str().unwrap()), Some("2"));
+        assert_eq!(m.get("c").map(|v| v.to_str().unwrap()), Some("3"));
+    }
+
+    // ─── emit_ndjson_line ────────────────────────────────────────────
+
+    #[test]
+    fn emit_ndjson_line_appends_newline() {
+        let mut buf = Vec::new();
+        emit_ndjson_line(&mut buf, &serde_json::json!({"k": 1})).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "{\"k\":1}\n");
+    }
+
+    #[test]
+    fn emit_ndjson_line_multi_call() {
+        let mut buf = Vec::new();
+        for i in 0..3 {
+            emit_ndjson_line(&mut buf, &serde_json::json!({"i": i})).unwrap();
+        }
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(s.lines().count(), 3);
+        assert!(s.ends_with('\n'));
+    }
+}
