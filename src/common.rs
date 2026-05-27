@@ -360,4 +360,51 @@ mod tests {
         let m = target(vec!["x: hello world"]).metadata().unwrap();
         assert_eq!(m.get("x").map(|v| v.to_str().unwrap()), Some("hello world"));
     }
+
+    #[test]
+    fn metadata_te_trailers() {
+        let m = target(vec!["te: trailers"]).metadata().unwrap();
+        assert_eq!(m.get("te").map(|v| v.to_str().unwrap()), Some("trailers"));
+    }
+
+    #[test]
+    fn metadata_accept_encoding() {
+        let m = target(vec!["accept-encoding: gzip"]).metadata().unwrap();
+        assert!(m.get("accept-encoding").is_some());
+    }
+
+    #[test]
+    fn emit_ndjson_line_array() {
+        let mut buf = Vec::new();
+        emit_ndjson_line(&mut buf, &serde_json::json!([1, 2])).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "[1,2]\n");
+    }
+
+    #[test]
+    fn metadata_equals_in_value() {
+        let m = target(vec!["cfg=a=b"]).metadata().unwrap();
+        assert_eq!(m.get("cfg").map(|v| v.to_str().unwrap()), Some("a=b"));
+    }
+
+    #[test]
+    fn metadata_single_key() {
+        assert_eq!(target(vec!["k=v"]).metadata().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn metadata_control_char_value_errors() {
+        assert!(target(vec!["x: \x01"]).metadata().is_err());
+    }
+
+    #[test]
+    fn emit_ndjson_line_empty_object() {
+        let mut buf = Vec::new();
+        emit_ndjson_line(&mut buf, &serde_json::json!({})).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "{}\n");
+    }
+
+    #[test]
+    fn metadata_grpc_status_details_bin_key_rejected() {
+        assert!(target(vec!["grpc-status-details-bin: AA=="]).metadata().is_err());
+    }
 }

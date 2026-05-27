@@ -322,6 +322,62 @@ mod tests {
         assert_eq!(s, "foo.bar.v1.Baz");
         assert_eq!(m, "Qux");
     }
+
+    #[test]
+    fn split_method_dot_boundary_at_start() {
+        let (s, m) = split_method(".Method").unwrap();
+        assert_eq!(s, "");
+        assert_eq!(m, "Method");
+    }
+
+    #[test]
+    fn split_method_many_dots_before_method() {
+        let (s, m) = split_method("a.b.c.d.e.f.G").unwrap();
+        assert_eq!(s, "a.b.c.d.e.f");
+        assert_eq!(m, "G");
+    }
+
+    #[test]
+    fn split_method_slash_in_service_part_only() {
+        let (s, m) = split_method("no/slash/in/service/Method").unwrap();
+        assert_eq!(s, "no");
+        assert_eq!(m, "slash/in/service/Method");
+    }
+
+    #[test]
+    fn split_method_health_watch() {
+        let (s, m) = split_method("grpc.health.v1.Health/Watch").unwrap();
+        assert_eq!(s, "grpc.health.v1.Health");
+        assert_eq!(m, "Watch");
+    }
+
+    #[test]
+    fn split_method_single_char_method() {
+        let (s, m) = split_method("Svc/X").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "X");
+    }
+
+    #[test]
+    fn split_method_rsplit_dot_last_segment() {
+        let (s, m) = split_method("pkg.sub.Service.Call").unwrap();
+        assert_eq!(s, "pkg.sub.Service");
+        assert_eq!(m, "Call");
+    }
+
+    #[test]
+    fn split_method_preserves_method_case() {
+        let (s, m) = split_method("Svc/GetUser").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "GetUser");
+    }
+
+    #[test]
+    fn split_method_empty_service_slash_only() {
+        let (s, m) = split_method("/M").unwrap();
+        assert_eq!(s, "");
+        assert_eq!(m, "M");
+    }
 }
 
 async fn describe(channel: tonic::transport::Channel, symbol: &str) -> Result<()> {
