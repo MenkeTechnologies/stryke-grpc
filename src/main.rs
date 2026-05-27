@@ -149,6 +149,179 @@ mod tests {
         assert_eq!(s, "");
         assert_eq!(m, "");
     }
+
+    #[test]
+    fn split_method_deep_package_slash_form() {
+        let (s, m) = split_method("grpc.health.v1.Health/Check").unwrap();
+        assert_eq!(s, "grpc.health.v1.Health");
+        assert_eq!(m, "Check");
+    }
+
+    #[test]
+    fn split_method_single_dot_rsplit() {
+        let (s, m) = split_method("Service.Method").unwrap();
+        assert_eq!(s, "Service");
+        assert_eq!(m, "Method");
+    }
+
+    #[test]
+    fn split_method_trailing_slash() {
+        let (s, m) = split_method("pkg.Service/").unwrap();
+        assert_eq!(s, "pkg.Service");
+        assert_eq!(m, "");
+    }
+
+    #[test]
+    fn split_method_multiple_slashes_only_first_splits() {
+        let (s, m) = split_method("a/b/c").unwrap();
+        assert_eq!(s, "a");
+        assert_eq!(m, "b/c");
+    }
+
+    #[test]
+    fn split_method_leading_dot_rsplit() {
+        let (s, m) = split_method(".Method").unwrap();
+        assert_eq!(s, "");
+        assert_eq!(m, "Method");
+    }
+
+    #[test]
+    fn split_method_package_with_version() {
+        let (s, m) = split_method("grpc.health.v1.Health/Check").unwrap();
+        assert_eq!(s, "grpc.health.v1.Health");
+        assert_eq!(m, "Check");
+    }
+
+    #[test]
+    fn split_method_dot_form_nested_service() {
+        let (s, m) = split_method("com.example.v1.Greeter.SayHello").unwrap();
+        assert_eq!(s, "com.example.v1.Greeter");
+        assert_eq!(m, "SayHello");
+    }
+
+    #[test]
+    fn split_method_service_method_no_package() {
+        let (s, m) = split_method("Greeter/Greet").unwrap();
+        assert_eq!(s, "Greeter");
+        assert_eq!(m, "Greet");
+    }
+
+    #[test]
+    fn split_method_deep_slash_in_method_part() {
+        let (s, m) = split_method("pkg.Svc/Method/Sub").unwrap();
+        assert_eq!(s, "pkg.Svc");
+        assert_eq!(m, "Method/Sub");
+    }
+
+    #[test]
+    fn split_method_single_char_service_and_method() {
+        let (s, m) = split_method("A/B").unwrap();
+        assert_eq!(s, "A");
+        assert_eq!(m, "B");
+    }
+
+    #[test]
+    fn split_method_dot_with_multiple_dots() {
+        let (s, m) = split_method("a.b.c.d.Method").unwrap();
+        assert_eq!(s, "a.b.c.d");
+        assert_eq!(m, "Method");
+    }
+
+    #[test]
+    fn split_method_unicode_service_name() {
+        let (s, m) = split_method("サービス/呼出").unwrap();
+        assert_eq!(s, "サービス");
+        assert_eq!(m, "呼出");
+    }
+
+    #[test]
+    fn split_method_long_method_name() {
+        let (s, m) = split_method("Svc/VeryLongMethodNameHere").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "VeryLongMethodNameHere");
+    }
+
+    #[test]
+    fn split_method_no_separator_errors() {
+        assert!(split_method("NoSeparator").is_err());
+    }
+
+    #[test]
+    fn split_method_double_slash_liberal() {
+        let (s, m) = split_method("Svc//Method").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "/Method");
+    }
+
+    #[test]
+    fn split_method_versioned_package() {
+        let (s, m) = split_method("my.api.v2.Service/Create").unwrap();
+        assert_eq!(s, "my.api.v2.Service");
+        assert_eq!(m, "Create");
+    }
+
+    #[test]
+    fn split_method_dot_only_method_part() {
+        let (s, m) = split_method("com.example.Greeter.SayHello").unwrap();
+        assert_eq!(s, "com.example.Greeter");
+        assert_eq!(m, "SayHello");
+    }
+
+    #[test]
+    fn split_method_underscore_in_service() {
+        let (s, m) = split_method("my_svc/MyMethod").unwrap();
+        assert_eq!(s, "my_svc");
+        assert_eq!(m, "MyMethod");
+    }
+
+    #[test]
+    fn split_method_numbers_in_method() {
+        let (s, m) = split_method("Svc/MethodV2").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "MethodV2");
+    }
+
+    #[test]
+    fn split_method_health_check() {
+        let (s, m) = split_method("grpc.health.v1.Health/Check").unwrap();
+        assert_eq!(m, "Check");
+        assert!(s.contains("Health"));
+    }
+
+    #[test]
+    fn split_method_dot_path_long_package() {
+        let (s, m) = split_method("a.b.c.d.e.Service/Run").unwrap();
+        assert_eq!(s, "a.b.c.d.e.Service");
+        assert_eq!(m, "Run");
+    }
+
+    #[test]
+    fn split_method_slash_method_with_dot() {
+        let (s, m) = split_method("Svc/Method.Sub").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "Method.Sub");
+    }
+
+    #[test]
+    fn split_method_whitespace_in_method_part_allowed() {
+        let (s, m) = split_method("Svc/Bad Method").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "Bad Method");
+    }
+
+    #[test]
+    fn split_method_empty_method_after_slash() {
+        let (s, m) = split_method("Svc/").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "");
+    }
+
+    #[test]
+    fn split_method_service_with_version_suffix() {
+        let (s, m) = split_method("foo.bar.v1.Baz/Qux").unwrap();
+        assert_eq!(s, "foo.bar.v1.Baz");
+        assert_eq!(m, "Qux");
+    }
 }
 
 async fn describe(channel: tonic::transport::Channel, symbol: &str) -> Result<()> {

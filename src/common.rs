@@ -193,4 +193,171 @@ mod tests {
         assert_eq!(s.lines().count(), 3);
         assert!(s.ends_with('\n'));
     }
+
+    #[test]
+    fn metadata_invalid_header_value_non_ascii_errors() {
+        let err = target(vec!["x-bin:\u{fffd}"]).metadata().unwrap_err();
+        assert!(format!("{err:#}").to_lowercase().contains("invalid"));
+    }
+
+    #[test]
+    fn metadata_empty_key_after_trim_errors() {
+        let err = target(vec![":value"]).metadata().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("invalid") || msg.contains("header"));
+    }
+
+    #[test]
+    fn metadata_value_only_equals_sign() {
+        let m = target(vec!["k=="]).metadata().unwrap();
+        assert_eq!(m.get("k").map(|v| v.to_str().unwrap()), Some("="));
+    }
+
+    #[test]
+    fn metadata_grpc_binary_metadata_key() {
+        let m = target(vec!["grpc-encoding:gzip"]).metadata().unwrap();
+        assert_eq!(
+            m.get("grpc-encoding").map(|v| v.to_str().unwrap()),
+            Some("gzip")
+        );
+    }
+
+    #[test]
+    fn metadata_empty_value_after_colon() {
+        let m = target(vec!["x-custom:"]).metadata().unwrap();
+        assert_eq!(m.get("x-custom").map(|v| v.to_str().unwrap()), Some(""));
+    }
+
+    #[test]
+    fn metadata_authorization_bearer_token() {
+        let m = target(vec!["authorization: Bearer tok"]).metadata().unwrap();
+        assert_eq!(
+            m.get("authorization").map(|v| v.to_str().unwrap()),
+            Some("Bearer tok")
+        );
+    }
+
+    #[test]
+    fn metadata_duplicate_keys_last_wins() {
+        let m = target(vec!["x:1", "x:2"]).metadata().unwrap();
+        assert_eq!(m.get("x").map(|v| v.to_str().unwrap()), Some("2"));
+    }
+
+    #[test]
+    fn metadata_user_agent_style_header() {
+        let m = target(vec!["user-agent: stryke-grpc/1"]).metadata().unwrap();
+        assert_eq!(
+            m.get("user-agent").map(|v| v.to_str().unwrap()),
+            Some("stryke-grpc/1")
+        );
+    }
+
+    #[test]
+    fn metadata_value_with_colon_in_token() {
+        let m = target(vec!["auth: Bearer abc:def"]).metadata().unwrap();
+        assert_eq!(
+            m.get("auth").map(|v| v.to_str().unwrap()),
+            Some("Bearer abc:def")
+        );
+    }
+
+    #[test]
+    fn metadata_x_dash_prefixed_key() {
+        let m = target(vec!["x-request-id: req-1"]).metadata().unwrap();
+        assert_eq!(
+            m.get("x-request-id").map(|v| v.to_str().unwrap()),
+            Some("req-1")
+        );
+    }
+
+    #[test]
+    fn metadata_many_headers() {
+        assert_eq!(
+            target(vec!["h0=0", "h1=1", "h2=2", "h3=3", "h4=4", "h5=5"])
+                .metadata()
+                .unwrap()
+                .len(),
+            6,
+        );
+    }
+
+    #[test]
+    fn emit_ndjson_line_nested() {
+        let mut buf = Vec::new();
+        emit_ndjson_line(&mut buf, &serde_json::json!({"a": [1]})).unwrap();
+        assert!(String::from_utf8(buf).unwrap().contains("[1]"));
+    }
+
+    #[test]
+    fn metadata_no_separator_errors() {
+        assert!(target(vec!["nosep"]).metadata().is_err());
+    }
+
+    #[test]
+    fn metadata_numeric_value() {
+        let m = target(vec!["retry: 3"]).metadata().unwrap();
+        assert_eq!(m.get("retry").map(|v| v.to_str().unwrap()), Some("3"));
+    }
+
+    #[test]
+    fn emit_ndjson_line_string() {
+        let mut buf = Vec::new();
+        emit_ndjson_line(&mut buf, &serde_json::json!("ok")).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "\"ok\"\n");
+    }
+
+    #[test]
+    fn metadata_cache_control_header() {
+        let m = target(vec!["cache-control: no-cache"]).metadata().unwrap();
+        assert_eq!(
+            m.get("cache-control").map(|v| v.to_str().unwrap()),
+            Some("no-cache"),
+        );
+    }
+
+    #[test]
+    fn metadata_content_type_json() {
+        let m = target(vec!["content-type: application/json"]).metadata().unwrap();
+        assert!(m.get("content-type").is_some());
+    }
+
+    #[test]
+    fn emit_ndjson_line_number() {
+        let mut buf = Vec::new();
+        emit_ndjson_line(&mut buf, &serde_json::json!(7)).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "7\n");
+    }
+
+    #[test]
+    fn metadata_two_different_keys() {
+        let m = target(vec!["a=1", "b=2"]).metadata().unwrap();
+        assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn metadata_key_with_dot() {
+        let m = target(vec!["grpc.timeout: 30s"]).metadata().unwrap();
+        assert_eq!(
+            m.get("grpc.timeout").map(|v| v.to_str().unwrap()),
+            Some("30s"),
+        );
+    }
+
+    #[test]
+    fn emit_ndjson_line_null() {
+        let mut buf = Vec::new();
+        emit_ndjson_line(&mut buf, &serde_json::Value::Null).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "null\n");
+    }
+
+    #[test]
+    fn metadata_empty_vec() {
+        assert!(target(vec![]).metadata().unwrap().is_empty());
+    }
+
+    #[test]
+    fn metadata_value_with_spaces() {
+        let m = target(vec!["x: hello world"]).metadata().unwrap();
+        assert_eq!(m.get("x").map(|v| v.to_str().unwrap()), Some("hello world"));
+    }
 }
