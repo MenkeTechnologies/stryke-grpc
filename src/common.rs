@@ -407,4 +407,45 @@ mod tests {
     fn metadata_grpc_status_details_bin_key_rejected() {
         assert!(target(vec!["grpc-status-details-bin: AA=="]).metadata().is_err());
     }
+
+    #[test]
+    fn metadata_hyphenated_custom_key() {
+        let m = target(vec!["x-request-id: abc"]).metadata().unwrap();
+        assert_eq!(m.get("x-request-id").map(|v| v.to_str().unwrap()), Some("abc"));
+    }
+
+    #[test]
+    fn metadata_colon_value_only() {
+        let m = target(vec!["k:"]).metadata().unwrap();
+        assert_eq!(m.get("k").map(|v| v.to_str().unwrap()), Some(""));
+    }
+
+    #[test]
+    fn metadata_user_agent_with_slash() {
+        let m = target(vec!["user-agent: curl/8.0"]).metadata().unwrap();
+        assert!(m.contains_key("user-agent"));
+    }
+
+    #[test]
+    fn metadata_empty_header_list() {
+        assert!(target(vec![]).metadata().unwrap().is_empty());
+    }
+
+    #[test]
+    fn metadata_value_with_tab_after_colon_trimmed() {
+        let m = target(vec!["k:\tval"]).metadata().unwrap();
+        assert_eq!(m.get("k").map(|v| v.to_str().unwrap()), Some("val"));
+    }
+
+    #[test]
+    fn metadata_grpc_timeout_header() {
+        let m = target(vec!["grpc-timeout: 1S"]).metadata().unwrap();
+        assert_eq!(m.get("grpc-timeout").map(|v| v.to_str().unwrap()), Some("1S"));
+    }
+
+    #[test]
+    fn metadata_authorization_basic() {
+        let m = target(vec!["authorization: Basic dXNlcjpwYXNz"]).metadata().unwrap();
+        assert!(m.contains_key("authorization"));
+    }
 }

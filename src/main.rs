@@ -378,6 +378,55 @@ mod tests {
         assert_eq!(s, "");
         assert_eq!(m, "M");
     }
+
+    #[test]
+    fn split_method_dot_package_v1() {
+        let (s, m) = split_method("my.api.v1.Greeter/SayHello").unwrap();
+        assert_eq!(s, "my.api.v1.Greeter");
+        assert_eq!(m, "SayHello");
+    }
+
+    #[test]
+    fn split_method_slash_wins_over_trailing_dot() {
+        let (s, m) = split_method("pkg.Svc/Method.Name").unwrap();
+        assert_eq!(s, "pkg.Svc");
+        assert_eq!(m, "Method.Name");
+    }
+
+    #[test]
+    fn split_method_service_with_digits() {
+        let (s, m) = split_method("Svc2/Call").unwrap();
+        assert_eq!(s, "Svc2");
+        assert_eq!(m, "Call");
+    }
+
+    #[test]
+    fn split_method_method_starts_with_underscore() {
+        let (s, m) = split_method("Svc/_private").unwrap();
+        assert_eq!(s, "Svc");
+        assert_eq!(m, "_private");
+    }
+
+    #[test]
+    fn split_method_deep_dot_rsplit() {
+        let (s, m) = split_method("a.b.c.Method").unwrap();
+        assert_eq!(s, "a.b.c");
+        assert_eq!(m, "Method");
+    }
+
+    #[test]
+    fn split_method_slash_with_dot_in_method() {
+        let (s, m) = split_method("pkg.Svc/Method.v2").unwrap();
+        assert_eq!(s, "pkg.Svc");
+        assert_eq!(m, "Method.v2");
+    }
+
+    #[test]
+    fn split_method_grpc_reflection_service() {
+        let (s, m) = split_method("grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo").unwrap();
+        assert_eq!(s, "grpc.reflection.v1alpha.ServerReflection");
+        assert_eq!(m, "ServerReflectionInfo");
+    }
 }
 
 async fn describe(channel: tonic::transport::Channel, symbol: &str) -> Result<()> {
