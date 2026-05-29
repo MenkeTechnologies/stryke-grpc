@@ -116,7 +116,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: stryke-grpc-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/stryke-grpc-helper
