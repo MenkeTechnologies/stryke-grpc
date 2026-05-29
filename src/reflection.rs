@@ -10,6 +10,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tonic::Request;
 
+#[allow(clippy::enum_variant_names)]
 pub mod proto {
     tonic::include_proto!("grpc.reflection.v1alpha");
 }
@@ -181,5 +182,7 @@ async fn file_by_filename(channel: Channel, name: &str) -> Result<Vec<Vec<u8>>> 
             _ => continue,
         }
     }
-    Err(anyhow!("reflection: no FileDescriptorResponse for `{name}`"))
+    Err(anyhow!(
+        "reflection: no FileDescriptorResponse for `{name}`"
+    ))
 }

@@ -130,10 +130,7 @@ mod tests {
     #[test]
     fn metadata_equals_separator() {
         let m = target(vec!["x-user=alice"]).metadata().unwrap();
-        assert_eq!(
-            m.get("x-user").map(|v| v.to_str().unwrap()),
-            Some("alice")
-        );
+        assert_eq!(m.get("x-user").map(|v| v.to_str().unwrap()), Some("alice"));
     }
 
     #[test]
@@ -151,7 +148,9 @@ mod tests {
 
     #[test]
     fn metadata_missing_separator_errors() {
-        let err = target(vec!["malformed-no-separator"]).metadata().unwrap_err();
+        let err = target(vec!["malformed-no-separator"])
+            .metadata()
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("malformed-no-separator"));
         assert!(msg.contains("k=v") || msg.contains("k:v"));
@@ -230,7 +229,9 @@ mod tests {
 
     #[test]
     fn metadata_authorization_bearer_token() {
-        let m = target(vec!["authorization: Bearer tok"]).metadata().unwrap();
+        let m = target(vec!["authorization: Bearer tok"])
+            .metadata()
+            .unwrap();
         assert_eq!(
             m.get("authorization").map(|v| v.to_str().unwrap()),
             Some("Bearer tok")
@@ -245,7 +246,9 @@ mod tests {
 
     #[test]
     fn metadata_user_agent_style_header() {
-        let m = target(vec!["user-agent: stryke-grpc/1"]).metadata().unwrap();
+        let m = target(vec!["user-agent: stryke-grpc/1"])
+            .metadata()
+            .unwrap();
         assert_eq!(
             m.get("user-agent").map(|v| v.to_str().unwrap()),
             Some("stryke-grpc/1")
@@ -317,7 +320,9 @@ mod tests {
 
     #[test]
     fn metadata_content_type_json() {
-        let m = target(vec!["content-type: application/json"]).metadata().unwrap();
+        let m = target(vec!["content-type: application/json"])
+            .metadata()
+            .unwrap();
         assert!(m.get("content-type").is_some());
     }
 
@@ -405,13 +410,18 @@ mod tests {
 
     #[test]
     fn metadata_grpc_status_details_bin_key_rejected() {
-        assert!(target(vec!["grpc-status-details-bin: AA=="]).metadata().is_err());
+        assert!(target(vec!["grpc-status-details-bin: AA=="])
+            .metadata()
+            .is_err());
     }
 
     #[test]
     fn metadata_hyphenated_custom_key() {
         let m = target(vec!["x-request-id: abc"]).metadata().unwrap();
-        assert_eq!(m.get("x-request-id").map(|v| v.to_str().unwrap()), Some("abc"));
+        assert_eq!(
+            m.get("x-request-id").map(|v| v.to_str().unwrap()),
+            Some("abc")
+        );
     }
 
     #[test]
@@ -440,12 +450,17 @@ mod tests {
     #[test]
     fn metadata_grpc_timeout_header() {
         let m = target(vec!["grpc-timeout: 1S"]).metadata().unwrap();
-        assert_eq!(m.get("grpc-timeout").map(|v| v.to_str().unwrap()), Some("1S"));
+        assert_eq!(
+            m.get("grpc-timeout").map(|v| v.to_str().unwrap()),
+            Some("1S")
+        );
     }
 
     #[test]
     fn metadata_authorization_basic() {
-        let m = target(vec!["authorization: Basic dXNlcjpwYXNz"]).metadata().unwrap();
+        let m = target(vec!["authorization: Basic dXNlcjpwYXNz"])
+            .metadata()
+            .unwrap();
         assert!(m.contains_key("authorization"));
     }
 }
