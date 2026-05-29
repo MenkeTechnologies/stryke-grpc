@@ -662,4 +662,84 @@ mod tests {
             _ => panic!("expected Call"),
         }
     }
+
+    // ─── clap parsing — Target flattened struct (round 2) ──────────────
+    // Previous round pinned subcommand routing + Call.data default. The
+    // flattened Target carries the connection surface (target / plaintext
+    // / insecure / authority / headers / timeout_s) — also untested.
+    // These pin: target positional REQUIRED at clap level; bool flags
+    // default off (TLS-on, peer-verified, no header injection);
+    // timeout_s=30s default; --header repeatable; --authority optional.
+
+    fn parse_cli_no_target(args: &[&str]) -> Result<Cli, clap::Error> {
+        // Skip the auto-injected target so we can test missing-target.
+        let mut argv = vec!["stryke-grpc-helper"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+    }
+
+    #[test]
+    fn cli_target_positional_required() {
+        // Pin: clap rejects when the `target` positional on the flattened
+        // Target struct is absent — even with a valid subcommand. Without
+        // a target there's no channel to open.
+        let err = parse_cli_no_target(&["list"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn cli_target_tls_defaults_secure_with_30s_timeout() {
+        // Pin TLS-by-default posture: plaintext off, insecure (skip cert
+        // verify) off, timeout_s=30. Drift here would silently downgrade
+        // TLS or expand the timeout budget on every call.
+        let cli = parse_cli(&["list"]).unwrap();
+        assert!(!cli.target.plaintext);
+        assert!(!cli.target.insecure);
+        assert!(cli.target.authority.is_none());
+        assert_eq!(cli.target.timeout_s, 30);
+        assert!(cli.target.headers.is_empty());
+        assert_eq!(cli.target.target, "localhost:50051");
+    }
+
+    #[test]
+    fn cli_target_plaintext_and_authority_thread_through() {
+        // Pin: --plaintext flips the bool; --authority Some(_). Both are
+        // global=true so placement after the subcommand is also accepted.
+        let cli = parse_cli(&["list", "--plaintext", "--authority", "svc.local"]).unwrap();
+        assert!(cli.target.plaintext);
+        assert_eq!(cli.target.authority.as_deref(), Some("svc.local"));
+    }
+
+    #[test]
+    fn cli_target_headers_repeatable_collect_into_vec() {
+        // Pin: --header / -H is repeatable (Vec<String>) and each value
+        // appends — drift to last-wins would silently drop auth headers.
+        let cli = parse_cli(&[
+            "list",
+            "-H",
+            "authorization=Bearer x",
+            "-H",
+            "x-trace-id=abc",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.target.headers,
+            vec!["authorization=Bearer x", "x-trace-id=abc"]
+        );
+    }
+
+    #[test]
+    fn cli_target_insecure_and_timeout_threading() {
+        // Pin: --insecure flips bool, --timeout-s overrides default 30.
+        let cli = parse_cli(&["call", "pkg.S/M", "--insecure", "--timeout-s", "5"]).unwrap();
+        assert!(cli.target.insecure);
+        assert_eq!(cli.target.timeout_s, 5);
+        match cli.cmd {
+            Top::Call { method, data } => {
+                assert_eq!(method, "pkg.S/M");
+                assert_eq!(data, "{}");
+            }
+            _ => panic!("expected Call"),
+        }
+    }
 }
