@@ -574,4 +574,33 @@ mod tests {
         assert_eq!(s, "grpc.reflection.v1alpha.ServerReflection");
         assert_eq!(m, "ServerReflectionInfo");
     }
+
+    // ─── split_method error-shape pins ───────────────────────────────
+    //
+    // Users grep grpcurl-style output for both the offending symbol
+    // and the expected `pkg.Service/Method` template. Pin both.
+
+    #[test]
+    fn split_method_error_echoes_offending_input() {
+        let err = split_method("totally invalid").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("totally invalid"),
+            "error should echo offending input; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn split_method_dot_fallback_loses_to_slash() {
+        // Even when the dot fallback could split, the slash wins —
+        // this contract was already asserted positively; pin the
+        // negative side: rsplit on a method containing slash never
+        // returns the dot split.
+        let (s, m) = split_method("a.b.c/d.e.f").unwrap();
+        assert_eq!(s, "a.b.c");
+        assert_eq!(m, "d.e.f");
+        // Confirm rsplit fallback isn't masquerading: m still contains
+        // dots, which it wouldn't if the rsplit('.') path had won.
+        assert!(m.contains('.'));
+    }
 }
