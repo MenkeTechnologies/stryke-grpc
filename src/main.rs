@@ -603,4 +603,63 @@ mod tests {
         // dots, which it wouldn't if the rsplit('.') path had won.
         assert!(m.contains('.'));
     }
+
+    // ─── clap parsing — Cli top-level + Top routing ────────────────────
+    // Pin the user-facing CLI surface: subcommand routing, default JSON
+    // payload, required positionals.
+
+    fn parse_cli(args: &[&str]) -> Result<Cli, clap::Error> {
+        // `target` is a positional on the flattened Target struct,
+        // not a flag. Inject it as the first positional before the
+        // subcommand so clap's parser binds it before consuming
+        // subcommand tokens.
+        let mut argv = vec!["stryke-grpc-helper", "localhost:50051"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+    }
+
+    #[test]
+    fn cli_list_and_ping_unit_variants() {
+        assert!(matches!(parse_cli(&["list"]).unwrap().cmd, Top::List));
+        assert!(matches!(parse_cli(&["ping"]).unwrap().cmd, Top::Ping));
+    }
+
+    #[test]
+    fn cli_describe_requires_symbol_positional() {
+        let err = parse_cli(&["describe"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn cli_call_data_default_is_empty_json_object() {
+        // Pin: bare `call pkg.Svc/M` sends `{}` (a valid empty body)
+        // rather than null/empty-string. Drift here would break
+        // server-side decoders that expect an object.
+        let cli = parse_cli(&["call", "pkg.Svc/Method"]).unwrap();
+        match cli.cmd {
+            Top::Call { method, data } => {
+                assert_eq!(method, "pkg.Svc/Method");
+                assert_eq!(data, "{}");
+            }
+            _ => panic!("expected Call"),
+        }
+    }
+
+    #[test]
+    fn cli_call_requires_method_positional() {
+        let err = parse_cli(&["call"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn cli_data_dash_passed_through_for_stdin_read() {
+        // Pin the docstring contract on Call.data: `-` is the agreed
+        // stdin sigil. clap doesn't transform; it must arrive verbatim
+        // so the call() handler can dispatch the stdin read path.
+        let cli = parse_cli(&["call", "pkg.S/M", "--data", "-"]).unwrap();
+        match cli.cmd {
+            Top::Call { data, .. } => assert_eq!(data, "-"),
+            _ => panic!("expected Call"),
+        }
+    }
 }
