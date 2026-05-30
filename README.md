@@ -151,7 +151,7 @@ Grpc::list      %opts → @services    # [{ service: "pkg.Name" }, ...]
 Grpc::describe  $symbol, %opts → \%info
 Grpc::call      $method, $request, %opts → \%response | $scalar | \@array
 Grpc::ping      %opts → 1 | ""
-Grpc::version() → "stryke-grpc-helper 0.1.1"
+Grpc::version() → "stryke-grpc-helper X.Y.Z"
 ```
 
 `$symbol` for `describe` is one of:
