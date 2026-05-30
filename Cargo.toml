@@ -6,6 +6,7 @@ description = "Reflection-based generic gRPC client for the stryke `grpc` packag
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-grpc"
+homepage = "https://menketechnologies.github.io/stryke-grpc/"
 publish = false
 
 [[bin]]
