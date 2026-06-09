@@ -96,4 +96,3 @@ fn Grpc::bidi_stream ($method, $requests, %opts) {
     die "Grpc::bidi_stream: streaming methods deferred in v0.2.0 cdylib"
 }
 
-1
