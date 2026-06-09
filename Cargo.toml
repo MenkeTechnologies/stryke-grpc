@@ -2,7 +2,7 @@
 name = "stryke-grpc"
 version = "0.2.0"
 edition = "2021"
-description = "Reflection-based generic gRPC client cdylib for stryke. Dlopened in-process with a persistent tonic channel + descriptor pool cache per endpoint."
+description = "Reflection-based generic gRPC client cdylib for stryke. Dlopened in-process with a persistent tonic channel + descriptor pool cache per endpoint"
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-grpc"
