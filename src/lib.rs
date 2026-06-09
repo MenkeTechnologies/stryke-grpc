@@ -382,3 +382,142 @@ pub extern "C" fn grpc__describe(args: *const c_char) -> *const c_char {
 pub extern "C" fn grpc__call(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_call)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_from_opts_defaults() {
+        let t = Target::from_opts(&json!({"target": "localhost:50051"})).unwrap();
+        assert_eq!(t.target, "localhost:50051");
+        assert!(!t.plaintext);
+        assert_eq!(t.authority, None);
+        assert!(t.headers.is_empty());
+        assert_eq!(t.timeout_s, 30);
+    }
+
+    #[test]
+    fn target_from_opts_full_set() {
+        let t = Target::from_opts(&json!({
+            "target": "api.example.com:443",
+            "plaintext": false,
+            "authority": "edge.example.com",
+            "headers": ["x-api-key:abc", "trace=42"],
+            "timeout_s": 5,
+        }))
+        .unwrap();
+        assert_eq!(t.target, "api.example.com:443");
+        assert_eq!(t.authority.as_deref(), Some("edge.example.com"));
+        assert_eq!(t.headers, vec!["x-api-key:abc", "trace=42"]);
+        assert_eq!(t.timeout_s, 5);
+    }
+
+    #[test]
+    fn target_missing_target_errors() {
+        let err = match Target::from_opts(&json!({})) {
+            Ok(_) => panic!("expected error, got Ok"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("missing target"), "{err}");
+    }
+
+    #[test]
+    fn endpoint_key_distinguishes_plaintext_and_tls() {
+        // Same target, different plaintext flag = different cache slot.
+        // Required so accidentally re-using one for the other doesn't
+        // skip TLS setup.
+        let a = Target::from_opts(&json!({"target": "x:1", "plaintext": true}))
+            .unwrap()
+            .endpoint_key();
+        let b = Target::from_opts(&json!({"target": "x:1", "plaintext": false}))
+            .unwrap()
+            .endpoint_key();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn endpoint_key_distinguishes_authority() {
+        let a = Target::from_opts(&json!({"target": "x:1", "authority": "a"}))
+            .unwrap()
+            .endpoint_key();
+        let b = Target::from_opts(&json!({"target": "x:1", "authority": "b"}))
+            .unwrap()
+            .endpoint_key();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn metadata_accepts_colon_separator() {
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-trace-id:abc-123"],
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        assert_eq!(m.get("x-trace-id").unwrap().to_str().unwrap(), "abc-123");
+    }
+
+    #[test]
+    fn metadata_accepts_equals_separator() {
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-tenant=acme"],
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        assert_eq!(m.get("x-tenant").unwrap().to_str().unwrap(), "acme");
+    }
+
+    #[test]
+    fn metadata_trims_whitespace_around_separator() {
+        // `x-foo : bar ` should still map cleanly.
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-foo : bar"],
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        assert_eq!(m.get("x-foo").unwrap().to_str().unwrap(), "bar");
+    }
+
+    #[test]
+    fn metadata_rejects_unseparated_header() {
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["no-separator-here"],
+        }))
+        .unwrap();
+        let err = t.metadata().unwrap_err().to_string();
+        assert!(err.contains("no-separator-here"), "{err}");
+    }
+
+    #[test]
+    fn split_method_slash_separator() {
+        let (svc, m) = split_method("helloworld.Greeter/SayHello").unwrap();
+        assert_eq!(svc, "helloworld.Greeter");
+        assert_eq!(m, "SayHello");
+    }
+
+    #[test]
+    fn split_method_dot_separator_fallback() {
+        // `pkg.Service.Method` without a slash splits at the LAST dot.
+        let (svc, m) = split_method("helloworld.Greeter.SayHello").unwrap();
+        assert_eq!(svc, "helloworld.Greeter");
+        assert_eq!(m, "SayHello");
+    }
+
+    #[test]
+    fn split_method_prefers_slash_when_both_present() {
+        let (svc, m) = split_method("pkg.Svc/Method.extra").unwrap();
+        assert_eq!(svc, "pkg.Svc");
+        assert_eq!(m, "Method.extra");
+    }
+
+    #[test]
+    fn split_method_no_separator_errors() {
+        let err = split_method("notamethod").unwrap_err().to_string();
+        assert!(err.contains("pkg.Service/Method"), "{err}");
+        assert!(err.contains("notamethod"), "{err}");
+    }
+}
