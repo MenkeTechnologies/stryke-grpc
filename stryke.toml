@@ -1,15 +1,22 @@
 [package]
 name = "grpc"
-version = "0.1.0"
-description = "Generic gRPC client for stryke. Reflection-based service discovery + JSON-in/JSON-out unary calls — like grpcurl but as a stryke package."
+version = "0.2.0"
+description = "Generic gRPC client for stryke. Reflection-based service discovery + JSON-in/JSON-out unary calls. cdylib loaded in-process — persistent tonic channel + descriptor pool cache across calls."
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-grpc"
 edition = "2026"
 
-[bin]
-grpc = "bin/grpc.stk"
-grpc-build = "bin/grpc-build.stk"
+[ffi]
+lib-name = "stryke_grpc"
+namespace = "Grpc"
+exports = [
+    "grpc__pkg_version",
+    "grpc__ping",
+    "grpc__list",
+    "grpc__describe",
+    "grpc__call",
+]
 
 [scripts]
 build = "cargo build --release"

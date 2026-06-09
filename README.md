@@ -58,10 +58,18 @@ production).
 
 ## [0x01] Install
 
+From a release (no rustc on the consumer machine):
+
+```sh
+s pkg install -g github.com/MenkeTechnologies/stryke-grpc
+```
+
+From a local checkout:
+
 ```sh
 cd ~/projects/stryke-grpc
 cargo build --release            # ~30s with prost/tonic cache; ~3-5 min cold
-s pkg install -g .               # installs `grpc` and `grpc-build` CLIs
+s pkg install -g .               # cdylib lands in ~/.stryke/store/grpc@<version>/
 ```
 
 Or:
@@ -69,6 +77,11 @@ Or:
 ```sh
 make install
 ```
+
+The cdylib is dlopened in-process on first `use Grpc`. A shared tokio
+runtime + `tonic::Channel` cache per endpoint + `DescriptorPool` cache
+per (endpoint, symbol) are held in `OnceCell` — no fork-per-call, and
+back-to-back calls reuse the same multiplexed HTTP/2 connection.
 
 ## [0x02] Quick start
 

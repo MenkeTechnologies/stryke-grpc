@@ -6,10 +6,10 @@ all: release
 help:
 	@printf '%s\n' \
 	  'targets:' \
-	  '  make release   - cargo build --release  (default; produces target/release/stryke-grpc-helper)' \
+	  '  make release   - cargo build --release  (default; produces target/release/libstryke_grpc.{dylib,so})' \
 	  '  make debug     - cargo build' \
 	  '  make test      - cargo test then `s test t/`  (needs $$STRYKE_GRPC_TEST_TARGET)' \
-	  '  make install   - `s pkg install -g .` (registers grpc/grpc-build CLI launchers)' \
+	  '  make install   - `s pkg install -g .` (cdylib lands in ~/.stryke/store/grpc@<ver>/)' \
 	  '  make clean     - cargo clean'
 
 release:

@@ -1,15 +1,17 @@
 # t/test_grpc.stk — connectivity tests against a reflection-enabled gRPC
 # server.
 #
-# Set $STRYKE_GRPC_TEST_TARGET (host:port) to opt in. The CI workflow
-# spins up grpcb.in / a tonic example for live round-trip. Skips cleanly
-# without a target.
+# Requires the cdylib to be loaded. Install once with `s pkg install -g .`
+# from the package root so stryke's FFI bridge dlopens
+# lib/libstryke_grpc.{dylib,so} on `use Grpc`.
+#
+# Set $STRYKE_GRPC_TEST_TARGET (host:port) to opt in to live tests.
 
-require "./lib/Grpc.stk"
+use Grpc
 
-my $have_helper = eval { Grpc::helper_path(); 1 }
-unless ($have_helper) {
-    p "1..0 # SKIP helper not built — run `cargo build --release` first"
+my $have_cdylib = eval { Grpc::version(); 1 }
+unless ($have_cdylib) {
+    p "1..0 # SKIP cdylib not loaded — run `s pkg install -g .` first"
     exit 0
 }
 my $target = $ENV{STRYKE_GRPC_TEST_TARGET}
