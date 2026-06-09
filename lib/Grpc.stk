@@ -1,24 +1,24 @@
-# lib/Grpc.stk — generic gRPC client for stryke (`use Grpc`).
-#
-# Thin wrapper around the `stryke-grpc` cdylib's `grpc__*` exports. The
-# cdylib is dlopened in-process on first `use Grpc` (see stryke's
-# `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
-# stryke-callable function via `rust_ffi::load_cdylib`.
-#
-# Reflection-based: connects to a gRPC server, fetches service
-# definitions via server reflection, builds a `prost_reflect`
-# `DescriptorPool`, and dispatches dynamic unary calls (JSON-in / JSON-out).
-#
-# Replaces the v1 helper-binary model (fork(2) + exec(2) + new HTTP/2
-# channel per call). The cdylib holds one shared tokio runtime + a
-# tonic Channel cache per endpoint + a DescriptorPool cache per
-# (endpoint, symbol). Back-to-back calls reuse the same HTTP/2
-# connection — true multiplexing, not the HTTP/1.0 cost model the v1
-# helper was stuck with.
-#
-# v0.2.0 surface: list / describe / unary call. Server-streaming,
-# client-streaming, and bidi are queued — they need a callback FFI shape
-# that v1's `FfiSig::StrToStr` doesn't model.
+## lib/Grpc.stk — generic gRPC client for stryke (`use Grpc`).
+##
+## Thin wrapper around the `stryke-grpc` cdylib's `grpc__*` exports. The
+## cdylib is dlopened in-process on first `use Grpc` (see stryke's
+## `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
+## stryke-callable function via `rust_ffi::load_cdylib`.
+##
+## Reflection-based: connects to a gRPC server, fetches service
+## definitions via server reflection, builds a `prost_reflect`
+## `DescriptorPool`, and dispatches dynamic unary calls (JSON-in / JSON-out).
+##
+## Replaces the v1 helper-binary model (fork(2) + exec(2) + new HTTP/2
+## channel per call). The cdylib holds one shared tokio runtime + a
+## tonic Channel cache per endpoint + a DescriptorPool cache per
+## (endpoint, symbol). Back-to-back calls reuse the same HTTP/2
+## connection — true multiplexing, not the HTTP/1.0 cost model the v1
+## helper was stuck with.
+##
+## v0.2.0 surface: list / describe / unary call. Server-streaming,
+## client-streaming, and bidi are queued — they need a callback FFI shape
+## that v1's `FfiSig::StrToStr` doesn't model.
 
 package Grpc
 
@@ -66,8 +66,8 @@ fn Grpc::describe ($symbol, %opts) {
 
 # ── unary call ──────────────────────────────────────────────────────
 
-# $method is `pkg.Service/Method`. $request is a hashref / arrayref / scalar
-# that the cdylib decodes against the method's input type.
+## $method is `pkg.Service/Method`. $request is a hashref / arrayref / scalar
+## that the cdylib decodes against the method's input type.
 fn Grpc::call ($method, $request, %opts) {
     Grpc::_decode("call",
         grpc__call(to_json(Grpc::_req({ method => $method, request => $request }, \%opts))))
