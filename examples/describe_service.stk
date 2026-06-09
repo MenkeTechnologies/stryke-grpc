@@ -4,8 +4,8 @@
 
 use Grpc
 
-my ($target, $symbol) = @ARGV
+val ($target, $symbol) = @ARGV
 die "usage: describe_service.stk HOST:PORT SERVICE_OR_METHOD\n" unless defined $symbol
 
-my $info = Grpc::describe($symbol, target => $target, plaintext => 1)
+val $info = Grpc::describe($symbol, target => $target, plaintext => 1)
 p to_json($info)

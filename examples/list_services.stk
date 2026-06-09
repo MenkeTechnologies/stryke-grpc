@@ -4,13 +4,13 @@
 
 use Grpc
 
-my $target = $ARGV[0]
+val $target = $ARGV[0]
 die "usage: list_services.stk HOST:PORT [--plaintext]\n" unless defined $target
 
-my %opts = (target => $target)
-for my $arg (@ARGV[1..$#ARGV]) {
+var %opts = (target => $target)
+for val $arg (@ARGV[1..$#ARGV]) {
     $opts{plaintext} = 1 if $arg eq "--plaintext"
 }
 
-my @services = Grpc::list(%opts)
+val @services = Grpc::list(%opts)
 p "$_->{service}" for @services

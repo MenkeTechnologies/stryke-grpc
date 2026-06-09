@@ -26,7 +26,7 @@ package Grpc
 
 ## Decode the cdylib's JSON return; die on `{error}` payload.
 fn Grpc::_decode ($name, $json) {
-    my $o = from_json $json
+    val $o = from_json $json
     if (ref $o eq "HASH" && exists $o->{error}) {
         die "Grpc::$name: $o->{error}"
     }
@@ -35,7 +35,7 @@ fn Grpc::_decode ($name, $json) {
 
 ## Build the FFI request hash by merging the caller's connection opts.
 fn Grpc::_req ($extra, $opts) {
-    my %r = %$extra
+    var %r = %$extra
     $r{target}     = $opts->{target}    if exists $opts->{target}    && defined $opts->{target}
     $r{plaintext}  = ($opts->{plaintext} ? \1 : \0) if exists $opts->{plaintext}
     $r{authority}  = $opts->{authority} if exists $opts->{authority} && defined $opts->{authority}
@@ -60,7 +60,7 @@ fn Grpc::ping (%opts) {
 
 ## List service names exposed by the reflection server.
 fn Grpc::list (%opts) {
-    my $o = Grpc::_decode("list", grpc__list(to_json(Grpc::_req({}, \%opts))))
+    val $o = Grpc::_decode("list", grpc__list(to_json(Grpc::_req({}, \%opts))))
     @{ $o->{services} }
 }
 
