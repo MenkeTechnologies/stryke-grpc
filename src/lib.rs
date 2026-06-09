@@ -71,6 +71,7 @@ fn pools() -> &'static Mutex<HashMap<String, DescriptorPool>> {
 
 // ── target options ─────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 struct Target {
     target: String,
     plaintext: bool,
@@ -415,10 +416,7 @@ mod tests {
 
     #[test]
     fn target_missing_target_errors() {
-        let err = match Target::from_opts(&json!({})) {
-            Ok(_) => panic!("expected error, got Ok"),
-            Err(e) => e.to_string(),
-        };
+        let err = Target::from_opts(&json!({})).unwrap_err().to_string();
         assert!(err.contains("missing target"), "{err}");
     }
 
