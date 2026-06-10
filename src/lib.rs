@@ -518,4 +518,67 @@ mod tests {
         assert!(err.contains("pkg.Service/Method"), "{err}");
         assert!(err.contains("notamethod"), "{err}");
     }
+
+    #[test]
+    fn metadata_preserves_value_with_internal_colon() {
+        // Real-world headers carry colons in their values — `Authorization`
+        // basic-auth payloads, proxy URLs, port numbers in custom headers,
+        // and protobuf any-style URIs. The parser uses `split_once(':')` so
+        // ONLY the first `:` separates key from value; the remainder of the
+        // value must survive intact. Catches the bug class where a future
+        // refactor swaps `split_once` for `split(':')` + index, silently
+        // truncating multi-colon values at the second colon.
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["authorization:Bearer abc:def:ghi"],
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        assert_eq!(
+            m.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer abc:def:ghi"
+        );
+    }
+
+    #[test]
+    fn metadata_preserves_internal_whitespace_in_value() {
+        // The parser uses `v.trim()`, which only strips leading/trailing
+        // whitespace. Internal spaces in a value (e.g. `User-Agent:
+        // my client/1.0 build x`) must be preserved verbatim. Catches the
+        // bug class where someone replaces `trim()` with `split_whitespace`
+        // + join, collapsing runs of spaces, or with a regex that eats
+        // internal whitespace.
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["user-agent:   my client / 1.0   build x   "],
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        // edges trimmed, interior preserved exactly
+        assert_eq!(
+            m.get("user-agent").unwrap().to_str().unwrap(),
+            "my client / 1.0   build x"
+        );
+    }
+
+    #[test]
+    fn metadata_duplicate_key_last_value_wins() {
+        // The parser calls `MetadataMap::insert`, which REPLACES the prior
+        // value for the same key (vs. `append` which would create multi-
+        // valued entries). Pinned because changing to `append` is a
+        // tempting "compat" move (HTTP allows repeated headers) but would
+        // silently change gRPC call semantics for callers that pass the
+        // same header twice expecting override behavior. Catches that
+        // insert/append swap.
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-tenant:first", "x-tenant:second"],
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        // Only one entry, value is `second` (last write wins).
+        let values: Vec<_> = m.get_all("x-tenant").iter().collect();
+        assert_eq!(values.len(), 1, "expected single value, got {values:?}");
+        assert_eq!(values[0].to_str().unwrap(), "second");
+    }
 }
