@@ -562,6 +562,84 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_key_distinguishes_target_string() {
+        // The cache key is `format!("{}|{}|{:?}", self.target, ...)`. The
+        // other endpoint_key_* tests pin plaintext and authority dimensions
+        // but NOT the target itself — if a refactor accidentally dropped
+        // `self.target` from the format string, two distinct endpoints
+        // (`a:1` and `b:1`) would share a cached Channel and every call to
+        // `b:1` would silently hit `a:1`. Pin that target is part of the
+        // key so that regression is caught at unit-test time, not in
+        // production where it manifests as cross-server data leaks.
+        let a = Target::from_opts(&json!({"target": "host-a:50051", "plaintext": true}))
+            .unwrap()
+            .endpoint_key();
+        let b = Target::from_opts(&json!({"target": "host-b:50051", "plaintext": true}))
+            .unwrap()
+            .endpoint_key();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn metadata_rejects_empty_key() {
+        // Header string `":value"` splits to `("", "value")`. The parser
+        // trims the empty key to `""` and passes to
+        // `AsciiMetadataKey::from_bytes(b"")` — which MUST reject (HTTP/2
+        // field names cannot be empty per RFC 7540 §8.1.2). Pin that the
+        // error surfaces with the empty-key context rather than silently
+        // inserting an empty-named metadata entry, which would either be
+        // dropped by tonic or transmitted as an invalid frame. Catches the
+        // bug class where someone replaces `AsciiMetadataKey::from_bytes`
+        // with a forgiving wrapper that defaults empty keys.
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": [":value-only"],
+        }))
+        .unwrap();
+        let err = t.metadata().unwrap_err().to_string();
+        // Error must reference the invalid header name path (the parser
+        // already includes "invalid header name" in its context).
+        assert!(
+            err.contains("invalid header name"),
+            "expected empty-key rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn split_method_empty_halves_pin_current_behavior() {
+        // Edge inputs `"/"`, `"foo/"`, `"/bar"`, `"foo."` currently produce
+        // Ok((<half>, <half>)) with one half empty. This pins that
+        // observable behavior so a future refactor must either keep it OR
+        // make an explicit decision to start rejecting empty halves (which
+        // would change error surfaces downstream: instead of `op_call`
+        // returning `service `` not found`, the user would see
+        // `method must look like ...`). Both choices are defensible; this
+        // test exists so the choice is conscious, not accidental.
+        //
+        // Non-boilerplate angle: pinning a quirky boundary case prevents a
+        // silent semantic shift in error messages that user-facing tooling
+        // (stryke's .stk scripts) may grep for. A regex matching the old
+        // error would silently stop matching after the refactor.
+        let (svc, m) = split_method("/").unwrap();
+        assert_eq!(svc, "");
+        assert_eq!(m, "");
+
+        let (svc, m) = split_method("svc/").unwrap();
+        assert_eq!(svc, "svc");
+        assert_eq!(m, "");
+
+        let (svc, m) = split_method("/Method").unwrap();
+        assert_eq!(svc, "");
+        assert_eq!(m, "Method");
+
+        // Dot-fallback: `rsplit_once('.')` picks the LAST dot, so trailing
+        // dot yields empty method name.
+        let (svc, m) = split_method("pkg.Svc.").unwrap();
+        assert_eq!(svc, "pkg.Svc");
+        assert_eq!(m, "");
+    }
+
+    #[test]
     fn metadata_duplicate_key_last_value_wins() {
         // The parser calls `MetadataMap::insert`, which REPLACES the prior
         // value for the same key (vs. `append` which would create multi-
