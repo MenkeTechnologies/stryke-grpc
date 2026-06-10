@@ -5,8 +5,7 @@
 use Grpc
 
 var ($target, $method, $data_json) = @ARGV
-die "usage: call_unary.stk HOST:PORT pkg.Service/Method '<json>'\n"
-    unless defined $method
+die "usage: call_unary.stk HOST:PORT pkg.Service/Method '<json>'\n" unless defined $method
 
 $data_json //= "{}"
 val $reply = Grpc::call($method, from_json($data_json),
