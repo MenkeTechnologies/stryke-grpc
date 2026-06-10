@@ -1,0 +1,42 @@
+#!/usr/bin/env stryke
+# examples/reflect.stk — enumerate every service + method via reflection.
+#
+# Requires a reflection-enabled gRPC server at $GRPC_HOST. Read-only.
+# Eval-guarded — missing server exits cleanly.
+#
+# Run:   s examples/reflect.stk
+#        GRPC_HOST=localhost:50051 s examples/reflect.stk
+
+use Grpc
+
+p "=== gRPC reflection tour ==="
+
+val $target = $ENV{GRPC_HOST} // "localhost:50051"
+p "target: $target"
+p ""
+
+val $alive = eval { Grpc::ping(target => $target) }
+unless ($alive) {
+    p "server not reachable at $target — start a reflection-enabled gRPC server to exercise the demo"
+    exit 0
+}
+
+val @svcs = eval { Grpc::list(target => $target) }
+if ($@ || scalar(@svcs) == 0) {
+    p "reflection returned no services (is reflection enabled on the server?)"
+    exit 0
+}
+
+p "services: " . scalar(@svcs)
+for val $svc (@svcs) {
+    val $desc = eval { Grpc::describe($svc, target => $target) }
+    next if $@
+    val @methods = @{ $desc->{methods} // [] }
+    p "  $svc (" . scalar(@methods) . " methods)"
+    for val $m (@methods) {
+        val $name = $m->{name} // "?"
+        val $client_stream = $m->{client_streaming} ? "stream" : "unary"
+        val $server_stream = $m->{server_streaming} ? "stream" : "unary"
+        p "    - $name  ($client_stream req → $server_stream resp)"
+    }
+}
