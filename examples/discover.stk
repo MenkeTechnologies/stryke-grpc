@@ -1,0 +1,35 @@
+#!/usr/bin/env stryke
+# examples/discover.stk — minimum-viable tour of the `Grpc` package.
+#
+# Runs end-to-end in CI: eval-guarded `Grpc::ping` returns false-ish
+# when no server is reachable. With a reflection-enabled server up at
+# $GRPC_HOST, the read-only block lists services and describes one.
+#
+# Run:   s examples/discover.stk
+#        GRPC_HOST=localhost:50051 s examples/discover.stk
+
+use Grpc
+
+p "=== Grpc discover ==="
+p "version:   " . Grpc::version()
+p "GRPC_HOST: " . ($ENV{GRPC_HOST} // "(default localhost:50051)")
+p ""
+
+val $alive = eval { Grpc::ping(target => $ENV{GRPC_HOST} // "localhost:50051") }
+
+if ($alive && !$@) {
+    p "server: reachable — listing reflection surface"
+    val @svcs = eval { Grpc::list(target => $ENV{GRPC_HOST} // "localhost:50051") }
+    p "  services: " . scalar(@svcs)
+    for val $s (@svcs[0..2]) {
+        next unless defined $s
+        p "    - $s"
+    }
+} else {
+    p "server: not reachable — skipping live ops"
+    p ""
+    p "expected call shape when live (server must enable reflection):"
+    p "  val @svcs = Grpc::list(target => \$host)"
+    p "  val \$svc  = Grpc::describe(\"pkg.Service\", target => \$host)"
+    p "  val \$rep  = Grpc::call(\"pkg.Service/Method\", \\%req, target => \$host)"
+}
