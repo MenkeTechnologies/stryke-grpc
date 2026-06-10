@@ -640,6 +640,67 @@ mod tests {
     }
 
     #[test]
+    fn metadata_rejects_crlf_injection_in_value() {
+        // SECURITY: Header values must not be allowed to contain `\r\n`,
+        // because the underlying HTTP/2 transport encodes metadata as
+        // header frames and an embedded CRLF in a value could (in some
+        // codepaths) be interpreted by intermediaries as a separator
+        // injecting a second header. This is the gRPC-layer analogue of
+        // classic HTTP header injection / response-splitting.
+        //
+        // The parser uses `v.trim()`, which strips `\r` and `\n` ONLY
+        // at the leading and trailing edges. An internal CRLF stays in
+        // the value and must be rejected by `AsciiMetadataValue::try_from`
+        // (which only accepts visible ASCII 32-127).
+        //
+        // Bug class caught: a future refactor swaps
+        // `AsciiMetadataValue::try_from` for `from_bytes` (accepts opaque
+        // octets including CR/LF), or wraps it in a forgiving fallback
+        // ("if try_from fails, percent-encode and retry"), silently
+        // allowing CRLF through. This test pins the strict-rejection
+        // invariant so the regression surfaces at unit-test time, not in
+        // production where the smuggled header might bypass auth or
+        // exfiltrate state.
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-auth:legit\r\nx-evil: exfil"],
+        }))
+        .unwrap();
+        let err = t.metadata().unwrap_err().to_string();
+        assert!(
+            err.contains("invalid header value"),
+            "expected CRLF rejection on value path, got: {err}"
+        );
+
+        // Also reject bare LF (some HTTP/2 stacks reject CR only when
+        // paired; bare LF is independently a smuggling vector).
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-auth:legit\nx-evil:exfil"],
+        }))
+        .unwrap();
+        let err = t.metadata().unwrap_err().to_string();
+        assert!(
+            err.contains("invalid header value"),
+            "expected bare-LF rejection on value path, got: {err}"
+        );
+
+        // And NUL — embedded NUL bytes have been used in HTTP smuggling
+        // attacks against C-string-backed proxies. `try_from` for Ascii
+        // values rejects bytes outside 32-127, so NUL (0x00) must error.
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-auth:legit\0evil"],
+        }))
+        .unwrap();
+        let err = t.metadata().unwrap_err().to_string();
+        assert!(
+            err.contains("invalid header value"),
+            "expected NUL rejection on value path, got: {err}"
+        );
+    }
+
+    #[test]
     fn metadata_duplicate_key_last_value_wins() {
         // The parser calls `MetadataMap::insert`, which REPLACES the prior
         // value for the same key (vs. `append` which would create multi-
