@@ -32,7 +32,7 @@ package, NDJSON-friendly, and statically linked. Opt-in package tier.
 - [\[0x02\] Quick start](#0x02-quick-start)
 - [\[0x03\] CLI: `grpc`](#0x03-cli-grpc)
 - [\[0x04\] API reference](#0x04-api-reference)
-- [\[0x05\] Helper protocol](#0x05-helper-protocol)
+- [\[0x05\] FFI layer](#0x05-ffi-layer)
 - [\[0x06\] How reflection works](#0x06-how-reflection-works)
 - [\[0x07\] Scope (v1)](#0x07-scope-v1)
 - [\[0x08\] Tests](#0x08-tests)
@@ -49,8 +49,8 @@ Every gRPC client pulls in tonic + prost + tokio + hyper + rustls + a
 file-descriptor reflection stack. ~30+ transitive crates. Useful when
 you need it; off the daily-driver path otherwise.
 
-`stryke-grpc` ships a thin stryke library plus a Rust helper binary
-(`stryke-grpc-helper`, ~3.4 MB). The helper uses **server reflection**
+`stryke-grpc` ships a thin stryke library plus a Rust cdylib
+(`libstryke_grpc.{dylib,so}`) dlopened in-process. The cdylib uses **server reflection**
 to discover services at call time, so you never need a local `.proto`
 for the target server — as long as reflection is enabled (default in
 most dev / pre-prod stacks; opt-in with one Tonic builder line for
@@ -122,7 +122,6 @@ Connection options every public fn understands:
 |---|---|
 | `target` | `host:port` (required), also accepts `http://...` / `https://...` |
 | `plaintext` | `1` to force HTTP/2 cleartext (no TLS) |
-| `insecure` | `1` to skip TLS peer verification (dev only) |
 | `authority` | override SNI hostname during TLS validation |
 | `headers` | hashref `{k=>v}` or arrayref `["k:v",...]` — sent as gRPC metadata |
 | `timeout_s` | default 30 |
@@ -164,7 +163,7 @@ Grpc::list      %opts → @services    # [{ service: "pkg.Name" }, ...]
 Grpc::describe  $symbol, %opts → \%info
 Grpc::call      $method, $request, %opts → \%response | $scalar | \@array
 Grpc::ping      %opts → 1 | ""
-Grpc::version() → "stryke-grpc-helper X.Y.Z"
+Grpc::version() → $version_string    # cdylib's CARGO_PKG_VERSION
 ```
 
 `$symbol` for `describe` is one of:
@@ -179,11 +178,24 @@ input message. The helper deserializes it against the resolved
 proto3 defaults filled in. Response decoding uses proto field names by
 default.
 
-### `use Grpc` plumbing
+Streaming wrappers (`Grpc::server_stream`, `Grpc::client_stream`,
+`Grpc::bidi_stream`) exist but are deferred in the v0.2.x cdylib —
+they die until the callback FFI ships.
 
-`Grpc::helper_path()`, `Grpc::ensure_built()`.
+## [0x05] FFI layer
 
-## [0x05] Helper protocol
+Each `Grpc::*` wrapper builds a JSON args dict and calls a sibling
+`grpc__*` symbol resolved out of `libstryke_grpc.{dylib,so}`. The
+cdylib is dlopened in-process on first `use Grpc` (via stryke's
+`pkg::commands::try_load_ffi_for` resolver hook) and exposes 5 entry
+points: `grpc__pkg_version`, `grpc__ping`, `grpc__list`,
+`grpc__describe`, `grpc__call`.
+
+Errors come back as a `{error}` JSON payload; the stryke wrapper dies
+with `Grpc::<op>: <reason>`.
+
+<details>
+<summary>v1 wire shape (historical helper binary)</summary>
 
 ```sh
 stryke-grpc-helper <host:port> [global flags] <subcommand> [args]
@@ -198,9 +210,11 @@ Output:
 
 Errors print to stderr, exit non-zero.
 
+</details>
+
 ## [0x06] How reflection works
 
-On each `list` / `describe` / `call` invocation, the helper:
+On each `list` / `describe` / `call` invocation, the cdylib:
 
 1. Opens a bidi stream to `grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo`.
 2. Sends `ListServices` (for `list`) or `FileContainingSymbol` (for the
@@ -284,21 +298,20 @@ stryke-grpc/
   proto/
     reflection.proto               # grpc/grpc reflection v1alpha
   src/
-    main.rs                        # CLI dispatch + call + describe
-    common.rs                      # connection plumbing + metadata
+    lib.rs                         # cdylib FFI exports + call + describe
     codec.rs                       # Vec<u8> passthrough tonic codec
     reflection.rs                  # reflection client + descriptor pool
   lib/
     Grpc.stk                       # `use Grpc`
-  bin/
-    grpc.stk                       # `grpc` CLI
-    grpc-build.stk
   t/
     test_grpc.stk
+    test_stryke_grpc_surface.stk
   examples/
     list_services.stk
     describe_service.stk
     call_unary.stk
+    discover.stk
+    reflect.stk
   .github/workflows/
     ci.yml                         # compile + live test against tonic server
     release.yml                    # cross-compile + GH release on tag push
