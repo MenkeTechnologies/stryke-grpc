@@ -159,10 +159,13 @@ Global flags:
 ### `use Grpc`
 
 ```stryke
-Grpc::list      %opts → @services    # [{ service: "pkg.Name" }, ...]
-Grpc::describe  $symbol, %opts → \%info
-Grpc::call      $method, $request, %opts → \%response | $scalar | \@array
-Grpc::ping      %opts → 1 | ""
+Grpc::list          %opts → @services    # [{ service: "pkg.Name" }, ...]
+Grpc::describe      $symbol, %opts → \%info
+Grpc::call          $method, $request, %opts → \%response | $scalar | \@array
+Grpc::server_stream $method, $request, %opts → \%{ messages, count }
+Grpc::client_stream $method, \@requests, %opts → \%response
+Grpc::bidi_stream   $method, \@requests, %opts → \%{ messages, count }
+Grpc::ping          %opts → 1 | ""
 Grpc::version() → $version_string    # cdylib's CARGO_PKG_VERSION
 ```
 
@@ -170,26 +173,44 @@ Grpc::version() → $version_string    # cdylib's CARGO_PKG_VERSION
 
 * `"pkg.Service"` → service info + method list
 * `"pkg.Service/Method"` → method info + input fields
-* `"pkg.MessageType"` → message info + field list
+* `"pkg.MessageType"` → message info + field list (name, number, type,
+  repeated/map/optional)
 
 `$request` for `call` is any stryke value that maps to the method's
 input message. The helper deserializes it against the resolved
 `MessageDescriptor` — fields named in the proto, snake_case, with
-proto3 defaults filled in. Response decoding uses proto field names by
-default.
+proto3 defaults filled in.
 
-Streaming wrappers (`Grpc::server_stream`, `Grpc::client_stream`,
-`Grpc::bidi_stream`) exist but are deferred in the v0.2.x cdylib —
-they die until the callback FFI ships.
+**Streaming.** Bounded streams are modelled as JSON arrays, so they fit the
+blocking FFI with no callback bridge: `server_stream` drains the response
+stream into `messages`; `client_stream` sends an arrayref of requests and
+returns the single reply; `bidi_stream` sends an arrayref and drains the
+replies. `max_messages` caps a drain.
+
+**Per-call options (`%opts`):**
+
+| opt | effect |
+|---|---|
+| `target`, `plaintext`, `authority`, `timeout_s` | connection |
+| `headers => [ "k:v", "k-bin:<base64>" ]` | ASCII + binary metadata |
+| `deadline_ms` | per-call gRPC deadline (`grpc-timeout`) |
+| `send_compression` / `accept_compression` | `gzip` \| `zstd` \| `deflate` |
+| `max_recv_mb` / `max_send_mb` | message-size caps |
+| `ca_cert` (PEM) | custom CA root |
+| `client_cert` + `client_key` (PEM) | mTLS client identity |
+| `with_metadata => 1` | wrap result as `{ response, metadata }` |
+| `emit_defaults`, `proto_names`, `enum_numbers`, `stringify_64bit` | JSON shaping |
+| `max_messages` | cap a server/bidi stream drain |
 
 ## [0x05] FFI layer
 
 Each `Grpc::*` wrapper builds a JSON args dict and calls a sibling
 `grpc__*` symbol resolved out of `libstryke_grpc.{dylib,so}`. The
 cdylib is dlopened in-process on first `use Grpc` (via stryke's
-`pkg::commands::try_load_ffi_for` resolver hook) and exposes 5 entry
+`pkg::commands::try_load_ffi_for` resolver hook) and exposes 8 entry
 points: `grpc__pkg_version`, `grpc__ping`, `grpc__list`,
-`grpc__describe`, `grpc__call`.
+`grpc__describe`, `grpc__call`, `grpc__server_stream`,
+`grpc__client_stream`, `grpc__bidi_stream`.
 
 Errors come back as a `{error}` JSON payload; the stryke wrapper dies
 with `Grpc::<op>: <reason>`.
@@ -231,19 +252,22 @@ No `.proto` files on disk — everything is fetched at call time.
 If your server hides reflection in production, enable it on a
 dev/canary box (one line for tonic, similar for grpc-go / grpc-java).
 
-## [0x07] Scope (v1)
+## [0x07] Scope
 
 | Capability | Status |
 |---|---|
 | List services | ✓ |
 | Describe service / method / message | ✓ |
 | Unary call (JSON in/out) | ✓ |
+| Server-, client-, and bidi-streaming (bounded → JSON arrays) | ✓ |
 | TLS + native-roots cert chain | ✓ |
-| gRPC metadata (`-H k:v`) | ✓ |
-| Server-streaming call | deferred v2 |
-| Client-streaming / bidi-streaming | deferred v2 |
-| `--proto FILE` fallback when reflection is off | deferred v2 |
-| mTLS (client cert) | deferred v2 |
+| mTLS (client cert) + custom CA root | ✓ |
+| ASCII + binary (`-bin`) metadata | ✓ |
+| Per-call deadline (`grpc-timeout`) | ✓ |
+| gzip / zstd / deflate compression | ✓ |
+| Message-size caps + response-metadata capture | ✓ |
+| `--proto FILE` fallback when reflection is off | open |
+| Unbounded / callback-style streaming for infinite streams | open |
 
 ## [0x08] Tests
 

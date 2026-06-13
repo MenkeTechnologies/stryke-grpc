@@ -18,7 +18,7 @@ path = "src/lib.rs"
 tonic-prost-build = "0.14"
 
 [dependencies]
-tonic = { version = "0.14", default-features = false, features = ["transport", "codegen", "channel", "tls-ring", "tls-native-roots"] }
+tonic = { version = "0.14", default-features = false, features = ["transport", "codegen", "channel", "tls-ring", "tls-native-roots", "gzip", "zstd", "deflate"] }
 tonic-prost = "0.14"
 prost = "0.14"
 prost-types = "0.14"

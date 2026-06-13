@@ -16,9 +16,13 @@
 //!   * `POOLS` — `prost_reflect::DescriptorPool` cache per endpoint (fetched
 //!     lazily via reflection on first `describe`/`call`).
 //!
-//! v1 covers list / describe / unary call. Server-streaming, client-streaming,
-//! and bidi are queued — they need a callback FFI shape that v1's
-//! `FfiSig::StrToStr` doesn't model.
+//! Surface: list / describe (services, methods, message types) / unary call /
+//! server-, client-, and bidi-streaming. Bounded streams are modelled as JSON
+//! arrays (drain-to-array on the way out, array-of-messages on the way in), so
+//! the whole surface fits stryke's blocking `StrToStr` FFI shape without a
+//! callback bridge. Per-call deadlines, gzip/zstd/deflate compression,
+//! message-size limits, ASCII + binary (`-bin`) metadata, response
+//! metadata/trailer capture, and mTLS / custom-CA TLS are all opt-in per call.
 
 mod codec;
 mod reflection;
@@ -33,12 +37,18 @@ use anyhow::{anyhow, Context, Result};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use prost::Message as _;
-use prost_reflect::{DescriptorPool, DynamicMessage, SerializeOptions};
+use prost_reflect::{
+    DescriptorPool, DynamicMessage, MessageDescriptor, MethodDescriptor, SerializeOptions,
+};
 use serde_json::{json, Value};
 use tokio::runtime::{Builder, Runtime};
 use tonic::client::Grpc;
-use tonic::metadata::{AsciiMetadataKey, AsciiMetadataValue, MetadataMap};
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
+use tonic::codec::CompressionEncoding;
+use tonic::metadata::{
+    AsciiMetadataKey, AsciiMetadataValue, BinaryMetadataKey, BinaryMetadataValue, KeyAndValueRef,
+    MetadataMap,
+};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::Request;
 
 use crate::codec::BytesCodec;
@@ -78,6 +88,21 @@ struct Target {
     authority: Option<String>,
     headers: Vec<String>,
     timeout_s: u64,
+    /// Per-call gRPC deadline (`grpc-timeout` header). Distinct from the
+    /// channel connect/idle `timeout_s`.
+    deadline_ms: Option<u64>,
+    /// Request-compression encoding to send (gzip/zstd/deflate).
+    send_compression: Option<String>,
+    /// Compression encodings this client will accept on responses.
+    accept_compression: Option<String>,
+    /// Inbound / outbound message size caps, in bytes.
+    max_recv_bytes: Option<usize>,
+    max_send_bytes: Option<usize>,
+    /// Custom CA root (PEM) for TLS verification.
+    ca_cert: Option<String>,
+    /// Client certificate + key (PEM) for mTLS.
+    client_cert: Option<String>,
+    client_key: Option<String>,
 }
 
 impl Target {
@@ -97,18 +122,39 @@ impl Target {
             })
             .unwrap_or_default();
         let timeout_s = opts["timeout_s"].as_u64().unwrap_or(30);
+        let mb_to_bytes = |key: &str| -> Option<usize> {
+            opts[key].as_f64().map(|mb| (mb * 1024.0 * 1024.0) as usize)
+        };
         Ok(Target {
             target,
             plaintext,
             authority,
             headers,
             timeout_s,
+            deadline_ms: opts["deadline_ms"].as_u64(),
+            send_compression: opts["send_compression"].as_str().map(String::from),
+            accept_compression: opts["accept_compression"].as_str().map(String::from),
+            max_recv_bytes: mb_to_bytes("max_recv_mb"),
+            max_send_bytes: mb_to_bytes("max_send_mb"),
+            ca_cert: opts["ca_cert"].as_str().map(String::from),
+            client_cert: opts["client_cert"].as_str().map(String::from),
+            client_key: opts["client_key"].as_str().map(String::from),
         })
     }
 
-    /// Endpoint key used for caching channels + descriptor pools.
+    /// Endpoint key used for caching channels + descriptor pools. Must include
+    /// every dimension that changes the underlying connection — TLS material
+    /// included, so an mTLS channel is never served from a plaintext slot.
     fn endpoint_key(&self) -> String {
-        format!("{}|{}|{:?}", self.target, self.plaintext, self.authority)
+        format!(
+            "{}|{}|{:?}|{:?}|{:?}|{:?}",
+            self.target,
+            self.plaintext,
+            self.authority,
+            self.ca_cert,
+            self.client_cert,
+            self.client_key
+        )
     }
 
     async fn channel(&self) -> Result<Channel> {
@@ -131,9 +177,25 @@ impl Target {
             .timeout(Duration::from_secs(self.timeout_s))
             .connect_timeout(Duration::from_secs(self.timeout_s));
         if !self.plaintext {
+            // Start from native roots, then layer a custom CA / client identity
+            // for private PKI or mTLS when supplied.
             let mut tls = ClientTlsConfig::new().with_native_roots();
             if let Some(a) = &self.authority {
                 tls = tls.domain_name(a);
+            }
+            if let Some(ca) = &self.ca_cert {
+                tls = tls.ca_certificate(Certificate::from_pem(ca));
+            }
+            match (&self.client_cert, &self.client_key) {
+                (Some(cert), Some(key)) => {
+                    tls = tls.identity(Identity::from_pem(cert, key));
+                }
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(anyhow!(
+                        "mTLS needs both client_cert and client_key (got only one)"
+                    ));
+                }
+                (None, None) => {}
             }
             endpoint = endpoint.tls_config(tls).context("configuring TLS")?;
         }
@@ -149,14 +211,123 @@ impl Target {
                 .split_once(':')
                 .or_else(|| kv.split_once('='))
                 .ok_or_else(|| anyhow!("header `{kv}`: expected k=v or k:v"))?;
-            let key = AsciiMetadataKey::from_bytes(k.trim().as_bytes())
-                .with_context(|| format!("invalid header name `{}`", k.trim()))?;
-            let val = AsciiMetadataValue::try_from(v.trim())
-                .with_context(|| format!("invalid header value `{}`", v.trim()))?;
-            map.insert(key, val);
+            let name = k.trim();
+            let value = v.trim();
+            // gRPC binary metadata: keys ending in `-bin` carry raw bytes whose
+            // value is base64. Everything else is ASCII metadata.
+            if name.to_ascii_lowercase().ends_with("-bin") {
+                let key = BinaryMetadataKey::from_bytes(name.as_bytes())
+                    .with_context(|| format!("invalid binary header name `{name}`"))?;
+                let bytes = base64_decode(value)
+                    .with_context(|| format!("binary header `{name}` value must be base64"))?;
+                map.insert_bin(key, BinaryMetadataValue::from_bytes(&bytes));
+            } else {
+                let key = AsciiMetadataKey::from_bytes(name.as_bytes())
+                    .with_context(|| format!("invalid header name `{name}`"))?;
+                let val = AsciiMetadataValue::try_from(value)
+                    .with_context(|| format!("invalid header value `{value}`"))?;
+                map.insert(key, val);
+            }
         }
         Ok(map)
     }
+}
+
+// ── compression + base64 ─────────────────────────────────────────────────────
+
+/// Map a compression name to tonic's `CompressionEncoding`.
+fn parse_compression(name: &str) -> Result<CompressionEncoding> {
+    Ok(match name.to_ascii_lowercase().as_str() {
+        "gzip" => CompressionEncoding::Gzip,
+        "zstd" => CompressionEncoding::Zstd,
+        "deflate" => CompressionEncoding::Deflate,
+        other => {
+            return Err(anyhow!(
+                "unknown compression `{other}` (want gzip|zstd|deflate)"
+            ))
+        }
+    })
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(B64[(n >> 18 & 0x3f) as usize] as char);
+        out.push(B64[(n >> 12 & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(n & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>> {
+    fn val(c: u8) -> Result<u32> {
+        match c {
+            b'A'..=b'Z' => Ok((c - b'A') as u32),
+            b'a'..=b'z' => Ok((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Ok((c - b'0' + 52) as u32),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err(anyhow!("invalid base64 character")),
+        }
+    }
+    let s: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if !s.len().is_multiple_of(4) {
+        return Err(anyhow!("base64 length must be a multiple of 4"));
+    }
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    for chunk in s.chunks(4) {
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        let n = (val(chunk[0])? << 18)
+            | (val(chunk[1])? << 12)
+            | (if chunk[2] == b'=' { 0 } else { val(chunk[2])? } << 6)
+            | (if chunk[3] == b'=' { 0 } else { val(chunk[3])? });
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// Snapshot a `MetadataMap` (response headers or trailers) into a JSON object.
+/// ASCII values pass through; binary (`-bin`) values are base64-encoded.
+fn metadata_to_json(map: &MetadataMap) -> Value {
+    let mut obj = serde_json::Map::new();
+    for kv in map.iter() {
+        match kv {
+            KeyAndValueRef::Ascii(k, v) => {
+                if let Ok(s) = v.to_str() {
+                    obj.insert(k.as_str().to_string(), json!(s));
+                }
+            }
+            KeyAndValueRef::Binary(k, v) => {
+                if let Ok(bytes) = v.to_bytes() {
+                    obj.insert(k.as_str().to_string(), json!(base64_encode(&bytes)));
+                }
+            }
+        }
+    }
+    Value::Object(obj)
 }
 
 // ── descriptor pool ─────────────────────────────────────────────────────────
@@ -211,20 +382,9 @@ async fn op_describe(opts: Value) -> Result<Value> {
         None => symbol.clone(),
     };
     let pool = descriptor_pool_for(&t, &pool_symbol).await?;
-    // Try service first, then method.
+    // Try service first, then method, then a message type.
     if let Some(svc) = pool.get_service_by_name(&symbol) {
-        let methods: Vec<Value> = svc
-            .methods()
-            .map(|m| {
-                json!({
-                    "name": m.name(),
-                    "input_type": m.input().full_name(),
-                    "output_type": m.output().full_name(),
-                    "client_streaming": m.is_client_streaming(),
-                    "server_streaming": m.is_server_streaming(),
-                })
-            })
-            .collect();
+        let methods: Vec<Value> = svc.methods().map(|m| describe_method(&m)).collect();
         return Ok(json!({
             "kind": "service",
             "name": svc.full_name(),
@@ -235,82 +395,293 @@ async fn op_describe(opts: Value) -> Result<Value> {
     if let Ok((svc_name, m_name)) = split_method(&symbol) {
         if let Some(svc) = pool.get_service_by_name(&svc_name) {
             if let Some(m) = svc.methods().find(|m| m.name() == m_name) {
-                return Ok(json!({
-                    "kind": "method",
-                    "service": svc.full_name(),
-                    "name": m.name(),
-                    "input_type": m.input().full_name(),
-                    "output_type": m.output().full_name(),
-                    "client_streaming": m.is_client_streaming(),
-                    "server_streaming": m.is_server_streaming(),
-                }));
+                let mut v = describe_method(&m);
+                v["kind"] = json!("method");
+                v["service"] = json!(svc.full_name());
+                return Ok(v);
             }
         }
     }
+    // message type form: `pkg.MessageType` — list its fields.
+    if let Some(msg) = pool.get_message_by_name(&symbol) {
+        return Ok(describe_message(&msg));
+    }
     Err(anyhow!("symbol `{}` not found", symbol))
 }
+
+/// Render a method descriptor to JSON (name, input/output, streaming flags).
+fn describe_method(m: &MethodDescriptor) -> Value {
+    json!({
+        "name": m.name(),
+        "input_type": m.input().full_name(),
+        "output_type": m.output().full_name(),
+        "client_streaming": m.is_client_streaming(),
+        "server_streaming": m.is_server_streaming(),
+    })
+}
+
+/// Render a message descriptor to JSON (each field's name, number, type,
+/// cardinality). Lets callers introspect request/response shapes via reflection
+/// without a `.proto` on hand.
+fn describe_message(msg: &MessageDescriptor) -> Value {
+    let fields: Vec<Value> = msg
+        .fields()
+        .map(|f| {
+            json!({
+                "name": f.name(),
+                "number": f.number(),
+                "type": format!("{:?}", f.kind()),
+                "repeated": f.is_list(),
+                "map": f.is_map(),
+                "optional": f.supports_presence(),
+            })
+        })
+        .collect();
+    json!({"kind": "message", "name": msg.full_name(), "fields": fields})
+}
+
+/// Method resolved to owned descriptors so the borrow on the descriptor pool
+/// is dropped before the async call (descriptors are cheaply clonable Arcs).
+struct ResolvedMethod {
+    svc_full: String,
+    m_name: String,
+    input: MessageDescriptor,
+    output: MessageDescriptor,
+    client_streaming: bool,
+    server_streaming: bool,
+}
+
+async fn resolve_method(t: &Target, method: &str) -> Result<ResolvedMethod> {
+    let (svc_name, m_name) = split_method(method)?;
+    let pool = descriptor_pool_for(t, &svc_name).await?;
+    let svc = pool
+        .get_service_by_name(&svc_name)
+        .ok_or_else(|| anyhow!("service `{svc_name}` not found"))?;
+    let m = svc
+        .methods()
+        .find(|m| m.name() == m_name)
+        .ok_or_else(|| anyhow!("method `{svc_name}/{m_name}` not found"))?;
+    Ok(ResolvedMethod {
+        svc_full: svc.full_name().to_string(),
+        m_name: m.name().to_string(),
+        input: m.input(),
+        output: m.output(),
+        client_streaming: m.is_client_streaming(),
+        server_streaming: m.is_server_streaming(),
+    })
+}
+
+// ── request / response codec helpers ─────────────────────────────────────────
+
+type PathAndQuery = tonic::codegen::http::uri::PathAndQuery;
+
+/// Build `SerializeOptions` from caller flags. Defaults match the prior
+/// behaviour: emit default fields, real JSON numbers, camelCase names.
+fn serialize_opts(opts: &Value) -> SerializeOptions {
+    SerializeOptions::new()
+        .skip_default_fields(!opts["emit_defaults"].as_bool().unwrap_or(true))
+        .use_proto_field_name(opts["proto_names"].as_bool().unwrap_or(false))
+        .use_enum_numbers(opts["enum_numbers"].as_bool().unwrap_or(false))
+        .stringify_64_bit_integers(opts["stringify_64bit"].as_bool().unwrap_or(false))
+}
+
+/// Decode one request JSON value against an input descriptor → protobuf bytes.
+fn encode_message(desc: &MessageDescriptor, json: &Value) -> Result<Vec<u8>> {
+    let s = json.to_string();
+    let mut deser = serde_json::Deserializer::from_str(&s);
+    let msg = DynamicMessage::deserialize(desc.clone(), &mut deser)
+        .context("decoding request JSON against the method's input type")?;
+    Ok(msg.encode_to_vec())
+}
+
+/// Decode response bytes against an output descriptor → JSON value.
+fn decode_message(desc: &MessageDescriptor, bytes: &[u8], ser: &SerializeOptions) -> Result<Value> {
+    let msg = DynamicMessage::decode(desc.clone(), bytes)
+        .context("decoding response against the method's output type")?;
+    let mut serializer = serde_json::Serializer::new(Vec::new());
+    msg.serialize_with_options(&mut serializer, ser)
+        .context("serializing response as JSON")?;
+    Ok(serde_json::from_slice(&serializer.into_inner())?)
+}
+
+/// Build a configured generic client: compression + message-size caps.
+fn configure_client(channel: Channel, t: &Target) -> Result<Grpc<Channel>> {
+    let mut client = Grpc::new(channel);
+    if let Some(c) = &t.send_compression {
+        client = client.send_compressed(parse_compression(c)?);
+    }
+    if let Some(c) = &t.accept_compression {
+        client = client.accept_compressed(parse_compression(c)?);
+    }
+    if let Some(n) = t.max_recv_bytes {
+        client = client.max_decoding_message_size(n);
+    }
+    if let Some(n) = t.max_send_bytes {
+        client = client.max_encoding_message_size(n);
+    }
+    Ok(client)
+}
+
+/// Assemble the gRPC path and a `Request` with metadata + per-call deadline.
+fn build_request<T>(
+    t: &Target,
+    svc_full: &str,
+    m_name: &str,
+    payload: T,
+) -> Result<(PathAndQuery, Request<T>)> {
+    let path_str = format!("/{svc_full}/{m_name}");
+    let path = path_str
+        .parse::<PathAndQuery>()
+        .with_context(|| format!("building gRPC path `{path_str}`"))?;
+    let mut req = Request::new(payload);
+    *req.metadata_mut() = t.metadata()?;
+    if let Some(ms) = t.deadline_ms {
+        req.set_timeout(Duration::from_millis(ms));
+    }
+    Ok((path, req))
+}
+
+/// Wrap a body value with response metadata when the caller asked for it.
+fn maybe_with_metadata(opts: &Value, body: Value, meta: &MetadataMap) -> Value {
+    if opts["with_metadata"].as_bool().unwrap_or(false) {
+        json!({"response": body, "metadata": metadata_to_json(meta)})
+    } else {
+        body
+    }
+}
+
+// ── unary + streaming calls ──────────────────────────────────────────────────
 
 async fn op_call(opts: Value) -> Result<Value> {
     let method = opts["method"]
         .as_str()
         .ok_or_else(|| anyhow!("missing method"))?
         .to_string();
-    let request_json = opts["request"].clone();
     let t = Target::from_opts(&opts)?;
-    let (svc_name, m_name) = split_method(&method)?;
-    let pool = descriptor_pool_for(&t, &svc_name).await?;
-    let svc = pool
-        .get_service_by_name(&svc_name)
-        .ok_or_else(|| anyhow!("service `{}` not found", svc_name))?;
-    let m = svc
-        .methods()
-        .find(|m| m.name() == m_name)
-        .ok_or_else(|| anyhow!("method `{}/{}` not found", svc_name, m_name))?;
-    if m.is_client_streaming() || m.is_server_streaming() {
+    let rm = resolve_method(&t, &method).await?;
+    if rm.client_streaming || rm.server_streaming {
         return Err(anyhow!(
-            "streaming methods are deferred in v0.2.0 cdylib — only unary calls work"
+            "`{method}` is a streaming method — use server_stream / client_stream / bidi_stream"
         ));
     }
-    let input_desc = m.input();
-    let output_desc = m.output();
-
-    // Decode request JSON → DynamicMessage → bytes.
-    let req_str = request_json.to_string();
-    let mut deser = serde_json::Deserializer::from_str(&req_str);
-    let req_msg = DynamicMessage::deserialize(input_desc.clone(), &mut deser)
-        .context("decoding request JSON against the method's input type")?;
-    let req_bytes = req_msg.encode_to_vec();
-
-    // Call.
+    let req_bytes = encode_message(&rm.input, &opts["request"])?;
     let channel = t.channel().await?;
-    let mut client = Grpc::new(channel);
+    let mut client = configure_client(channel, &t)?;
     client.ready().await.context("waiting for channel ready")?;
-    let path = format!("/{}/{}", svc.full_name(), m.name());
-    let path = path
-        .parse::<tonic::codegen::http::uri::PathAndQuery>()
-        .with_context(|| format!("building gRPC path `{}`", path))?;
-
-    let metadata = t.metadata()?;
-    let mut req = Request::new(req_bytes);
-    *req.metadata_mut() = metadata;
+    let (path, req) = build_request(&t, &rm.svc_full, &rm.m_name, req_bytes)?;
     let resp = client
         .unary(req, path, BytesCodec)
         .await
         .context("unary call")?;
-    let resp_bytes = resp.into_inner();
+    let (meta, resp_bytes, _ext) = resp.into_parts();
+    let body = decode_message(&rm.output, &resp_bytes, &serialize_opts(&opts))?;
+    Ok(maybe_with_metadata(&opts, body, &meta))
+}
 
-    // Decode response bytes → DynamicMessage → JSON.
-    let resp_msg = DynamicMessage::decode(output_desc.clone(), &resp_bytes[..])
-        .context("decoding response against the method's output type")?;
-    let mut serializer = serde_json::Serializer::pretty(Vec::new());
-    let opts_ser = SerializeOptions::new()
-        .skip_default_fields(false)
-        .stringify_64_bit_integers(false);
-    resp_msg
-        .serialize_with_options(&mut serializer, &opts_ser)
-        .context("serializing response as JSON")?;
-    let resp_json: Value = serde_json::from_slice(&serializer.into_inner())?;
-    Ok(resp_json)
+async fn op_server_stream(opts: Value) -> Result<Value> {
+    let method = opts["method"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing method"))?
+        .to_string();
+    let t = Target::from_opts(&opts)?;
+    let rm = resolve_method(&t, &method).await?;
+    if !rm.server_streaming || rm.client_streaming {
+        return Err(anyhow!("`{method}` is not a server-streaming method"));
+    }
+    let req_bytes = encode_message(&rm.input, &opts["request"])?;
+    let channel = t.channel().await?;
+    let mut client = configure_client(channel, &t)?;
+    client.ready().await.context("waiting for channel ready")?;
+    let (path, req) = build_request(&t, &rm.svc_full, &rm.m_name, req_bytes)?;
+    let resp = client
+        .server_streaming(req, path, BytesCodec)
+        .await
+        .context("server-streaming call")?;
+    let meta = resp.metadata().clone();
+    let mut stream = resp.into_inner();
+    let ser = serialize_opts(&opts);
+    let cap = opts["max_messages"].as_u64();
+    let mut messages = Vec::new();
+    while let Some(bytes) = stream.message().await.context("reading server stream")? {
+        messages.push(decode_message(&rm.output, &bytes, &ser)?);
+        if cap.is_some_and(|c| messages.len() as u64 >= c) {
+            break;
+        }
+    }
+    let body = json!({"messages": messages, "count": messages.len()});
+    Ok(maybe_with_metadata(&opts, body, &meta))
+}
+
+async fn op_client_stream(opts: Value) -> Result<Value> {
+    let method = opts["method"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing method"))?
+        .to_string();
+    let t = Target::from_opts(&opts)?;
+    let rm = resolve_method(&t, &method).await?;
+    if !rm.client_streaming || rm.server_streaming {
+        return Err(anyhow!("`{method}` is not a client-streaming method"));
+    }
+    let reqs = opts["requests"]
+        .as_array()
+        .ok_or_else(|| anyhow!("client-streaming `requests` must be an array of messages"))?;
+    let bufs: Vec<Vec<u8>> = reqs
+        .iter()
+        .map(|r| encode_message(&rm.input, r))
+        .collect::<Result<_>>()?;
+    let channel = t.channel().await?;
+    let mut client = configure_client(channel, &t)?;
+    client.ready().await.context("waiting for channel ready")?;
+    let (path, req) = build_request(&t, &rm.svc_full, &rm.m_name, tokio_stream::iter(bufs))?;
+    let resp = client
+        .client_streaming(req, path, BytesCodec)
+        .await
+        .context("client-streaming call")?;
+    let (meta, resp_bytes, _ext) = resp.into_parts();
+    let body = decode_message(&rm.output, &resp_bytes, &serialize_opts(&opts))?;
+    Ok(maybe_with_metadata(&opts, body, &meta))
+}
+
+async fn op_bidi_stream(opts: Value) -> Result<Value> {
+    let method = opts["method"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing method"))?
+        .to_string();
+    let t = Target::from_opts(&opts)?;
+    let rm = resolve_method(&t, &method).await?;
+    if !rm.client_streaming || !rm.server_streaming {
+        return Err(anyhow!(
+            "`{method}` is not a bidirectional-streaming method"
+        ));
+    }
+    let reqs = opts["requests"]
+        .as_array()
+        .ok_or_else(|| anyhow!("bidi-streaming `requests` must be an array of messages"))?;
+    let bufs: Vec<Vec<u8>> = reqs
+        .iter()
+        .map(|r| encode_message(&rm.input, r))
+        .collect::<Result<_>>()?;
+    let channel = t.channel().await?;
+    let mut client = configure_client(channel, &t)?;
+    client.ready().await.context("waiting for channel ready")?;
+    let (path, req) = build_request(&t, &rm.svc_full, &rm.m_name, tokio_stream::iter(bufs))?;
+    let resp = client
+        .streaming(req, path, BytesCodec)
+        .await
+        .context("bidi-streaming call")?;
+    let meta = resp.metadata().clone();
+    let mut stream = resp.into_inner();
+    let ser = serialize_opts(&opts);
+    let cap = opts["max_messages"].as_u64();
+    let mut messages = Vec::new();
+    while let Some(bytes) = stream.message().await.context("reading bidi stream")? {
+        messages.push(decode_message(&rm.output, &bytes, &ser)?);
+        if cap.is_some_and(|c| messages.len() as u64 >= c) {
+            break;
+        }
+    }
+    let body = json!({"messages": messages, "count": messages.len()});
+    Ok(maybe_with_metadata(&opts, body, &meta))
 }
 
 // ── FFI plumbing ────────────────────────────────────────────────────────────
@@ -382,6 +753,21 @@ pub extern "C" fn grpc__describe(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__call(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_call)
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__server_stream(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_server_stream)
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__client_stream(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_client_stream)
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__bidi_stream(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_bidi_stream)
 }
 
 #[cfg(test)]
@@ -719,5 +1105,139 @@ mod tests {
         let values: Vec<_> = m.get_all("x-tenant").iter().collect();
         assert_eq!(values.len(), 1, "expected single value, got {values:?}");
         assert_eq!(values[0].to_str().unwrap(), "second");
+    }
+
+    // ── new-surface helper coverage ──────────────────────────────────────────
+
+    #[test]
+    fn base64_round_trips_arbitrary_bytes() {
+        let raw = [0u8, 1, 2, 255, 254, 128, b'z'];
+        assert_eq!(base64_decode(&base64_encode(&raw)).unwrap(), raw);
+        // Known vectors.
+        assert_eq!(base64_encode(b"Man"), "TWFu");
+        assert_eq!(base64_encode(b"Ma"), "TWE=");
+        assert_eq!(base64_encode(b"M"), "TQ==");
+        assert_eq!(base64_decode("TWFu").unwrap(), b"Man");
+    }
+
+    #[test]
+    fn parse_compression_accepts_known_and_rejects_unknown() {
+        assert_eq!(
+            parse_compression("gzip").unwrap(),
+            CompressionEncoding::Gzip
+        );
+        assert_eq!(
+            parse_compression("ZSTD").unwrap(),
+            CompressionEncoding::Zstd
+        );
+        assert_eq!(
+            parse_compression("deflate").unwrap(),
+            CompressionEncoding::Deflate
+        );
+        let err = parse_compression("snappy").unwrap_err().to_string();
+        assert!(err.contains("snappy"), "{err}");
+    }
+
+    #[test]
+    fn target_parses_new_options() {
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "deadline_ms": 250,
+            "send_compression": "gzip",
+            "accept_compression": "zstd",
+            "max_recv_mb": 8,
+            "max_send_mb": 2,
+        }))
+        .unwrap();
+        assert_eq!(t.deadline_ms, Some(250));
+        assert_eq!(t.send_compression.as_deref(), Some("gzip"));
+        assert_eq!(t.accept_compression.as_deref(), Some("zstd"));
+        assert_eq!(t.max_recv_bytes, Some(8 * 1024 * 1024));
+        assert_eq!(t.max_send_bytes, Some(2 * 1024 * 1024));
+    }
+
+    #[test]
+    fn endpoint_key_distinguishes_tls_material() {
+        // Custom CA / client cert change the channel; they MUST split the cache
+        // slot so an mTLS channel is never served to a plain-TLS caller.
+        let base = Target::from_opts(&json!({"target": "x:1"}))
+            .unwrap()
+            .endpoint_key();
+        let ca = Target::from_opts(&json!({"target": "x:1", "ca_cert": "PEM"}))
+            .unwrap()
+            .endpoint_key();
+        let mtls =
+            Target::from_opts(&json!({"target": "x:1", "client_cert": "C", "client_key": "K"}))
+                .unwrap()
+                .endpoint_key();
+        assert_ne!(base, ca);
+        assert_ne!(base, mtls);
+        assert_ne!(ca, mtls);
+    }
+
+    #[test]
+    fn metadata_binary_header_decodes_base64() {
+        // `-bin` keys carry raw bytes whose JSON value is base64. The map must
+        // store the DECODED bytes, retrievable via get_bin().to_bytes().
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-trace-bin:TWFu"], // base64("Man")
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        let v = m.get_bin("x-trace-bin").expect("binary metadata present");
+        assert_eq!(v.to_bytes().unwrap().as_ref(), b"Man");
+    }
+
+    #[test]
+    fn metadata_binary_header_rejects_bad_base64() {
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-trace-bin:not valid base64!!!"],
+        }))
+        .unwrap();
+        let err = t.metadata().unwrap_err().to_string();
+        assert!(err.contains("base64"), "expected base64 error, got: {err}");
+    }
+
+    #[test]
+    fn metadata_to_json_renders_ascii_and_binary() {
+        let t = Target::from_opts(&json!({
+            "target": "x:1",
+            "headers": ["x-ascii:hello", "x-raw-bin:TWFu"],
+        }))
+        .unwrap();
+        let m = t.metadata().unwrap();
+        let j = metadata_to_json(&m);
+        assert_eq!(j["x-ascii"], "hello");
+        // Binary value comes back re-encoded as base64 of the decoded bytes.
+        assert_eq!(j["x-raw-bin"], "TWFu");
+    }
+
+    #[test]
+    fn serialize_opts_defaults_and_overrides() {
+        // Defaults: emit defaults (skip=false), camelCase, real numbers.
+        let d = serialize_opts(&json!({}));
+        // Round-trip the flags through a serialize of a known message is heavy;
+        // instead pin the builder by reconstructing the expected struct via
+        // Debug equivalence of the public knobs we set.
+        let expect_default = SerializeOptions::new()
+            .skip_default_fields(false)
+            .use_proto_field_name(false)
+            .use_enum_numbers(false)
+            .stringify_64_bit_integers(false);
+        assert_eq!(format!("{d:?}"), format!("{expect_default:?}"));
+        let o = serialize_opts(&json!({
+            "emit_defaults": false,
+            "proto_names": true,
+            "enum_numbers": true,
+            "stringify_64bit": true,
+        }));
+        let expect_over = SerializeOptions::new()
+            .skip_default_fields(true)
+            .use_proto_field_name(true)
+            .use_enum_numbers(true)
+            .stringify_64_bit_integers(true);
+        assert_eq!(format!("{o:?}"), format!("{expect_over:?}"));
     }
 }

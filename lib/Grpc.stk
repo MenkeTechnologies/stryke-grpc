@@ -16,9 +16,12 @@
 ## connection — true multiplexing, not the HTTP/1.0 cost model the v1
 ## helper was stuck with.
 ##
-## v0.2.0 surface: list / describe / unary call. Server-streaming,
-## client-streaming, and bidi are queued — they need a callback FFI shape
-## that v1's `FfiSig::StrToStr` doesn't model.
+## Surface: list / describe (service, method, message type) / unary call /
+## server-, client-, and bidi-streaming. Bounded streams map to JSON arrays
+## (drain-to-array out, array-of-messages in), so streaming fits the blocking
+## `StrToStr` FFI without a callback bridge. Per-call deadlines, gzip/zstd/
+## deflate compression, message-size caps, ASCII + binary (`-bin`) metadata,
+## response-metadata capture, and mTLS / custom-CA TLS are all opt-in.
 
 package Grpc
 
@@ -33,14 +36,21 @@ fn Grpc::_decode ($name, $json) {
     $o
 }
 
-## Build the FFI request hash by merging the caller's connection opts.
+## Build the FFI request hash by merging the caller's connection + call opts.
+## Scalar/string/number opts are forwarded verbatim; boolean opts are coerced
+## to JSON booleans via \1 / \0 references.
 fn Grpc::_req ($extra, $opts) {
     var %r = %$extra
-    $r{target}     = $opts->{target}    if exists $opts->{target}    && defined $opts->{target}
-    $r{plaintext}  = ($opts->{plaintext} ? \1 : \0) if exists $opts->{plaintext}
-    $r{authority}  = $opts->{authority} if exists $opts->{authority} && defined $opts->{authority}
-    $r{headers}    = $opts->{headers}   if exists $opts->{headers}   && defined $opts->{headers}
-    $r{timeout_s}  = $opts->{timeout_s} if exists $opts->{timeout_s} && defined $opts->{timeout_s}
+    # passthrough string / number / array opts
+    for $k (qw/target authority headers timeout_s deadline_ms
+              send_compression accept_compression max_recv_mb max_send_mb
+              ca_cert client_cert client_key max_messages/) {
+        $r{$k} = $opts->{$k} if exists $opts->{$k} && defined $opts->{$k}
+    }
+    # boolean opts → JSON true/false
+    for $k (qw/plaintext with_metadata emit_defaults proto_names enum_numbers stringify_64bit/) {
+        $r{$k} = ($opts->{$k} ? \1 : \0) if exists $opts->{$k}
+    }
     \%r
 }
 
@@ -79,20 +89,31 @@ fn Grpc::call ($method, $request, %opts) {
         grpc__call(to_json(Grpc::_req({ method => $method, request => $request }, \%opts))))
 }
 
-# ── deferred streaming ops ──────────────────────────────────────────
+# ── streaming calls (bounded streams ↔ JSON arrays) ─────────────────
 
-## Server-streaming call — deferred in v0.2.0 cdylib.
+## Server-streaming call. $request is a single message; the server's stream of
+## responses is drained into an array. opts: max_messages caps the drain,
+## with_metadata wraps the result. Returns { messages => [...], count } (or
+## { response => {...}, metadata } when with_metadata is set).
 fn Grpc::server_stream ($method, $request, %opts) {
-    die "Grpc::server_stream: streaming methods deferred in v0.2.0 cdylib"
+    Grpc::_decode("server_stream",
+        grpc__server_stream(to_json(Grpc::_req({ method => $method, request => $request }, \%opts))))
 }
 
-## Client-streaming call — deferred in v0.2.0 cdylib.
+## Client-streaming call. $requests is an arrayref of messages streamed to the
+## server, which replies with one message. Returns the single response.
 fn Grpc::client_stream ($method, $requests, %opts) {
-    die "Grpc::client_stream: streaming methods deferred in v0.2.0 cdylib"
+    die "Grpc::client_stream: requests must be arrayref" unless ref($requests) eq "ARRAY"
+    Grpc::_decode("client_stream",
+        grpc__client_stream(to_json(Grpc::_req({ method => $method, requests => $requests }, \%opts))))
 }
 
-## Bidi-streaming call — deferred in v0.2.0 cdylib.
+## Bidi-streaming call. $requests is an arrayref streamed to the server; the
+## response stream is drained into an array. opts: max_messages, with_metadata.
+## Returns { messages => [...], count }.
 fn Grpc::bidi_stream ($method, $requests, %opts) {
-    die "Grpc::bidi_stream: streaming methods deferred in v0.2.0 cdylib"
+    die "Grpc::bidi_stream: requests must be arrayref" unless ref($requests) eq "ARRAY"
+    Grpc::_decode("bidi_stream",
+        grpc__bidi_stream(to_json(Grpc::_req({ method => $method, requests => $requests }, \%opts))))
 }
 
