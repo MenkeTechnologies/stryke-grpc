@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="stryke-grpc — REFLECTION-BASED gRPC CLIENT FOR STRYKE // LIKE grpcurl, AS A PACKAGE. Generic, reflection-based gRPC client for stryke — list services, describe methods, call unary and streaming RPCs with JSON in/out. Like grpcurl but as a stryke package, NDJSON-friendly, and statically linked.">
+  <meta name="description" content="stryke-grpc — REFLECTION-BASED gRPC CLIENT FOR STRYKE // LIKE grpcurl, AS A PACKAGE. Generic, reflection-based gRPC client for stryke — list services, describe methods, call unary and streaming RPCs with JSON in/out. Like grpcurl but as a stryke package. Ships as a Rust cdylib that stryke dlopens in-process on first `use Grpc`.">
   <title>stryke-grpc — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -86,7 +86,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/MenkeTechnologiesMeta" target="_blank" rel="noopener noreferrer">Meta</a>
           </nav>
-          <p class="docs-build-line">stryke package · CLI launcher <code>grpc</code> · Rust helper <code>stryke-grpc-helper</code> · opt-in (kept out of stryke core)</p>
+          <p class="docs-build-line">stryke package · cdylib <code>libstryke_grpc.{dylib,so}</code> · dlopen'd in-process on <code>use Grpc</code> · opt-in (kept out of stryke core)</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -108,57 +108,57 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>STRYKE-GRPC</h2>
-      <p class="tutorial-subtitle"><strong>Describe, call, decode &mdash; all over NDJSON.</strong> Generic, reflection-based gRPC client for stryke &mdash; list services, describe methods, call unary and streaming RPCs with JSON in/out. Like <a href="https://github.com/fullstorydev/grpcurl">grpcurl</a> but as a stryke package, NDJSON-friendly, and statically linked.</p>
+      <p class="tutorial-subtitle"><strong>Describe, call, decode.</strong> Generic, reflection-based gRPC client for stryke &mdash; list services, describe methods, call unary and streaming RPCs with JSON in/out. Like <a href="https://github.com/fullstorydev/grpcurl">grpcurl</a> but as a stryke package: it ships as a Rust cdylib that stryke <code>dlopen</code>s in-process on first <code>use Grpc</code>.</p>
 
       <section class="tutorial-section">
         <h2>Install</h2>
-<pre># build the helper binary, install as a stryke package
+<pre># from a release (no rustc on the consumer machine)
+s pkg install -g github.com/MenkeTechnologies/stryke-grpc
+
+# from a local checkout
 cd ~/projects/stryke-grpc
-cargo build --release
-s pkg install -g .
+cargo build --release            # produces target/release/libstryke_grpc.{dylib,so}
+s pkg install -g .               # cdylib lands in ~/.stryke/store/grpc@&lt;version&gt;/
 
 # one-liner
-make install
-
-# verify
-grpc --help</pre>
-        <p>After install, <code>grpc --help</code> works from anywhere on PATH (assuming <code>~/.stryke/bin/</code> is on PATH). The stryke library is auto-discoverable to any project that depends on the package via <code>[deps] grpc = { path = "..." }</code> or, when published, by name.</p>
+make install</pre>
+        <p>The cdylib is dlopened in-process on first <code>use Grpc</code> &mdash; no helper-binary fork per call. A shared tokio runtime + <code>tonic::Channel</code> cache per endpoint + <code>DescriptorPool</code> cache per (endpoint, symbol) are held in <code>OnceCell</code>, so back-to-back calls reuse the same multiplexed HTTP/2 connection. Any stryke script that declares <code>use Grpc</code> resolves the package automatically.</p>
       </section>
 
       <section class="tutorial-section">
-        <h2>CLI: <code>grpc</code></h2>
+        <h2>Quick start: <code>use Grpc</code></h2>
         <table class="example-tbl">
           <tbody>
-            <tr><td>list services on a target</td><td><code>grpc list api.example.com:50051</code></td></tr>
-            <tr><td>describe a method</td><td><code>grpc describe api.example.com:50051 helloworld.Greeter/SayHello</code></td></tr>
-            <tr><td>call a unary RPC</td><td><code>grpc call api.example.com:50051 helloworld.Greeter/SayHello '{"name":"world"}'</code></td></tr>
-            <tr><td>local test server</td><td><code>grpc call localhost:50051 -plaintext echo.Echo/Echo '{"msg":"hi"}'</code></td></tr>
+            <tr><td>list services</td><td><code>my @services = Grpc::list target =&gt; "localhost:50051", plaintext =&gt; 1</code></td></tr>
+            <tr><td>describe a service</td><td><code>p to_json Grpc::describe "helloworld.Greeter", target =&gt; "localhost:50051", plaintext =&gt; 1</code></td></tr>
+            <tr><td>describe a method</td><td><code>p to_json Grpc::describe "helloworld.Greeter/SayHello", target =&gt; "localhost:50051", plaintext =&gt; 1</code></td></tr>
+            <tr><td>unary call</td><td><code>my $reply = Grpc::call "helloworld.Greeter/SayHello", { name =&gt; "stryke" }, target =&gt; "localhost:50051", plaintext =&gt; 1</code></td></tr>
+            <tr><td>auth headers / metadata</td><td><code>Grpc::call "myapi.v1.Service/Auth", { token =&gt; "x" }, target =&gt; "api.example.com:443", headers =&gt; { "authorization" =&gt; "Bearer $ENV{JWT}" }</code></td></tr>
+            <tr><td>liveness probe</td><td><code>Grpc::ping target =&gt; "localhost:50051", plaintext =&gt; 1</code></td></tr>
           </tbody>
         </table>
-        <p>The full flag matrix lives in the <a href="https://github.com/MenkeTechnologies/stryke-grpc#0x03-cli-grpc">README "CLI" section</a>.</p>
+        <p>The full API lives in the <a href="https://github.com/MenkeTechnologies/stryke-grpc#0x04-api-reference">README "API reference" section</a>.</p>
       </section>
 
       <section class="tutorial-section">
         <h2>Why a package, not a builtin</h2>
-        <p>Reflection-driven means no <code>.proto</code> files needed on the client side. Targets that expose the gRPC reflection service work out of the box.</p>
-        <p>The stryke side is a thin NDJSON-pipe wrapper; the heavy code lives in the <code>stryke-grpc-helper</code> sidecar binary and is loaded on demand. Core stryke is never linked against this package's deps.</p>
+        <p>Reflection-driven means no <code>.proto</code> files needed on the client side. Targets that expose the gRPC reflection service work out of the box. Every gRPC client pulls in tonic + prost + tokio + hyper + rustls + a file-descriptor reflection stack (~30+ transitive crates) &mdash; useful when you need it, off the daily-driver path otherwise.</p>
+        <p>The stryke side is a thin <code>.stk</code> wrapper that calls <code>grpc__*</code> FFI symbols on the cdylib; the heavy code lives in <code>libstryke_grpc.{dylib,so}</code>, dlopened in-process on first <code>use Grpc</code>. Core stryke is never linked against this package's deps.</p>
       </section>
 
       <section class="tutorial-section">
-        <h2>Helper protocol</h2>
-        <p>The <code>stryke-grpc-helper</code> sidecar speaks newline-delimited JSON over stdin/stdout. The stryke library shells out per call and pipes structured data both ways. This keeps stryke startup small while making the package's surface area available on demand.</p>
-<pre># manual invocation (debugging only)
-echo '{"op":"version"}' | stryke-grpc-helper</pre>
+        <h2>FFI layer</h2>
+        <p>Each <code>Grpc::*</code> wrapper builds a JSON args dict and calls a sibling <code>grpc__*</code> symbol resolved out of <code>libstryke_grpc.{dylib,so}</code>. The cdylib is dlopened in-process on first <code>use Grpc</code> and exposes 8 entry points: <code>grpc__pkg_version</code>, <code>grpc__ping</code>, <code>grpc__list</code>, <code>grpc__describe</code>, <code>grpc__call</code>, <code>grpc__server_stream</code>, <code>grpc__client_stream</code>, <code>grpc__bidi_stream</code>. A shared tokio runtime + <code>tonic::Channel</code> cache per endpoint + <code>DescriptorPool</code> cache per (endpoint, symbol) are held in <code>OnceCell</code> &mdash; no fork-per-call. Responses are JSON; errors come back as <code>{"error": "&lt;msg&gt;"}</code> and the wrapper <code>die</code>s with <code>Grpc::&lt;op&gt;: &lt;reason&gt;</code>.</p>
       </section>
 
       <section class="tutorial-section">
         <h2>Layout</h2>
 <pre>stryke-grpc/
-&#9500;&#9472;&#9472; Cargo.toml             # bin = stryke-grpc-helper (publish = false)
+&#9500;&#9472;&#9472; Cargo.toml             # cdylib crate manifest (crate-type = ["cdylib"], publish = false)
 &#9500;&#9472;&#9472; src/
-&#9474;   &#9492;&#9472;&#9472; main.rs           # helper binary entry point
-&#9500;&#9472;&#9472; lib/                   # stryke .stk wrapper(s)
-&#9500;&#9472;&#9472; stryke.toml            # stryke package manifest
+&#9474;   &#9492;&#9472;&#9472; lib.rs            # cdylib — grpc__* extern "C" exports
+&#9500;&#9472;&#9472; lib/                   # stryke .stk wrapper(s) — `use Grpc`
+&#9500;&#9472;&#9472; stryke.toml            # stryke package manifest ([ffi] exports table)
 &#9500;&#9472;&#9472; t/                     # zunit-style tests
 &#9500;&#9472;&#9472; examples/              # runnable .stk examples
 &#9500;&#9472;&#9472; Makefile               # `make install` builds + installs
