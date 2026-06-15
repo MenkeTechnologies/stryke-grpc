@@ -151,6 +151,13 @@ fn Grpc::parse_method ($method) {
     Grpc::_decode("parse_method", grpc__parse_method(to_json({ method => $method })))
 }
 
+## Parse a grpc-timeout header value ("<value><unit>") → { value, unit,
+## unit_name, nanos, seconds }. Units are case-sensitive: H Hour, M Minute, S
+## Second, m Millisecond, u Microsecond, n Nanosecond.
+fn Grpc::parse_timeout ($timeout) {
+    Grpc::_decode("parse_timeout", grpc__parse_timeout(to_json({ timeout => $timeout })))
+}
+
 ## Build a gRPC method path from parts — inverse of parse_method. opts: service
 ## (required), method (required), package (optional, dotted onto the service).
 ## Returns a hashref { path, full_service }.

@@ -72,6 +72,16 @@ assert_eq Grpc::grpc_status_for_http(503)->{name}, "UNAVAILABLE",     "grpc_stat
 assert_eq Grpc::grpc_status_for_http(504)->{name}, "DEADLINE_EXCEEDED", "grpc_status_for_http: 504 → DEADLINE_EXCEEDED"
 assert_eq Grpc::grpc_status_for_http(500)->{name}, "UNKNOWN", "grpc_status_for_http: other → UNKNOWN"
 
+# parse_timeout: grpc-timeout header (case-sensitive units).
+val $to = Grpc::parse_timeout("100m")
+assert_eq $to->{unit_name}, "Millisecond", "parse_timeout: 100m is milliseconds"
+assert_eq $to->{nanos},     100000000,     "parse_timeout: 100ms in nanos"
+assert_eq $to->{seconds},   0.1,           "parse_timeout: 100ms in seconds"
+assert_eq Grpc::parse_timeout("5M")->{nanos}, 300000000000, "parse_timeout: 5M is 5 minutes"
+assert_eq Grpc::parse_timeout("5m")->{nanos}, 5000000,      "parse_timeout: 5m is 5 milliseconds (case matters)"
+assert_eq Grpc::parse_timeout("30S")->{unit_name}, "Second", "parse_timeout: S is Second"
+assert_dies fn { Grpc::parse_timeout("100x") }, "parse_timeout: rejects an unknown unit"
+
 val $pm = Grpc::parse_method("/grpc.health.v1.Health/Check")
 assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
 assert_eq $pm->{service}, "Health",         "parse_method: service"

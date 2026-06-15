@@ -176,6 +176,7 @@ Grpc::status_code($name_or_code) → \%{ code, name }   # "NOT_FOUND" ⇄ 5 (cod
 Grpc::status_codes()             → @{ {code, name} }   # the full 17-code enum
 Grpc::http_status_for($n_or_c)   → { code, name, http_status }   # gRPC status → HTTP status (grpc-gateway mapping)
 Grpc::grpc_status_for_http($http) → { http_status, code, name }  # HTTP status → gRPC status (spec http-grpc-status-mapping; distinct table)
+Grpc::parse_timeout($timeout)    → \%{ value, unit, unit_name, nanos, seconds }   # grpc-timeout header; units H/M/S/m/u/n (case-sensitive)
 Grpc::parse_method($method)      → \%{ full_service, package, service, method }
 Grpc::build_method(%opts)        → \%{ path, full_service }   # parts → /pkg.Service/Method; inverse of parse_method
 Grpc::is_binary_key($key)        → 1 | ""              # gRPC "-bin" metadata convention

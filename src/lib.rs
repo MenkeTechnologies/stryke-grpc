@@ -846,6 +846,51 @@ fn op_status_codes(_opts: Value) -> Result<Value> {
     Ok(json!({"codes": codes}))
 }
 
+/// Parse a `grpc-timeout` header value (`<value><unit>`) into its parts. The
+/// value is 1–8 ASCII digits; the unit is one of `H` Hour, `M` Minute, `S`
+/// Second, `m` Millisecond, `u` Microsecond, `n` Nanosecond — case-sensitive, so
+/// `M` (minute) and `m` (millisecond) differ. opts: `timeout` (required).
+/// Returns `{value, unit, unit_name, nanos, seconds}`; errors if the timeout
+/// overflows u64 nanoseconds. Pure.
+fn op_parse_timeout(opts: Value) -> Result<Value> {
+    let raw = opts
+        .get("timeout")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing timeout"))?;
+    let t = raw.trim();
+    let unit_char = t
+        .chars()
+        .last()
+        .ok_or_else(|| anyhow!("empty grpc-timeout"))?;
+    let num = &t[..t.len() - unit_char.len_utf8()];
+    if num.is_empty() || num.len() > 8 || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(anyhow!(
+            "grpc-timeout value must be 1-8 digits before the unit: `{t}`"
+        ));
+    }
+    let value: u64 = num.parse()?;
+    let (unit_name, per_unit_nanos): (&str, u64) = match unit_char {
+        'H' => ("Hour", 3_600_000_000_000),
+        'M' => ("Minute", 60_000_000_000),
+        'S' => ("Second", 1_000_000_000),
+        'm' => ("Millisecond", 1_000_000),
+        'u' => ("Microsecond", 1_000),
+        'n' => ("Nanosecond", 1),
+        other => return Err(anyhow!("unknown grpc-timeout unit `{other}` (H|M|S|m|u|n)")),
+    };
+    let nanos = value
+        .checked_mul(per_unit_nanos)
+        .ok_or_else(|| anyhow!("grpc-timeout overflows u64 nanoseconds: `{t}`"))?;
+    Ok(json!({
+        "value": value,
+        "unit": unit_char.to_string(),
+        "unit_name": unit_name,
+        "nanos": nanos,
+        "seconds": nanos as f64 / 1e9,
+    }))
+}
+
 /// Parse a gRPC method path `/package.Service/Method` into its parts. Pure.
 fn op_parse_method(opts: Value) -> Result<Value> {
     let path = opts
@@ -973,6 +1018,11 @@ pub extern "C" fn grpc__http_status_for(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__grpc_status_for_http(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_grpc_status_for_http(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_timeout(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_timeout(opts) })
 }
 
 #[no_mangle]
@@ -1565,6 +1615,45 @@ mod tests {
             json!(501)
         );
         assert!(op_grpc_status_for_http(json!({})).is_err());
+    }
+
+    #[test]
+    fn parse_timeout_decodes_value_and_unit() {
+        // Millisecond.
+        let ms = op_parse_timeout(json!({"timeout": "100m"})).unwrap();
+        assert_eq!(ms["value"], json!(100));
+        assert_eq!(ms["unit"], json!("m"));
+        assert_eq!(ms["unit_name"], json!("Millisecond"));
+        assert_eq!(ms["nanos"], json!(100_000_000u64));
+        assert_eq!(ms["seconds"], json!(0.1));
+        // Case matters: `M` is Minute, `m` is Millisecond — 5M ≠ 5m.
+        assert_eq!(
+            op_parse_timeout(json!({"timeout": "5M"})).unwrap()["nanos"],
+            json!(300_000_000_000u64),
+            "5M = 5 minutes"
+        );
+        assert_eq!(
+            op_parse_timeout(json!({"timeout": "5m"})).unwrap()["nanos"],
+            json!(5_000_000u64),
+            "5m = 5 milliseconds"
+        );
+        // Every documented unit.
+        for (t, name, nanos) in [
+            ("2H", "Hour", 7_200_000_000_000u64),
+            ("30S", "Second", 30_000_000_000),
+            ("5000u", "Microsecond", 5_000_000),
+            ("250n", "Nanosecond", 250),
+        ] {
+            let v = op_parse_timeout(json!({ "timeout": t })).unwrap();
+            assert_eq!(v["unit_name"], json!(name), "{t} unit");
+            assert_eq!(v["nanos"], json!(nanos), "{t} nanos");
+        }
+        // 8-digit max value is allowed; 9 digits, missing/unknown unit reject.
+        assert!(op_parse_timeout(json!({"timeout": "99999999S"})).is_ok());
+        assert!(op_parse_timeout(json!({"timeout": "999999999S"})).is_err());
+        assert!(op_parse_timeout(json!({"timeout": "100"})).is_err());
+        assert!(op_parse_timeout(json!({"timeout": "100x"})).is_err());
+        assert!(op_parse_timeout(json!({})).is_err());
     }
 
     #[test]
