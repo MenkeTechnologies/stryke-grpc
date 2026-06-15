@@ -136,6 +136,13 @@ fn Grpc::parse_method ($method) {
     Grpc::_decode("parse_method", grpc__parse_method(to_json({ method => $method })))
 }
 
+## Build a gRPC method path from parts — inverse of parse_method. opts: service
+## (required), method (required), package (optional, dotted onto the service).
+## Returns a hashref { path, full_service }.
+fn Grpc::build_method (%opts) {
+    Grpc::_decode("build_method", grpc__build_method(to_json(\%opts)))
+}
+
 ## True if a metadata key is binary by the gRPC "-bin" suffix convention.
 fn Grpc::is_binary_key ($key) {
     Grpc::_decode("is_binary_key", grpc__is_binary_key(to_json({ key => $key })))->{binary}

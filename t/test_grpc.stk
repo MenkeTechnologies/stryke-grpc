@@ -62,6 +62,11 @@ assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
 assert_eq $pm->{service}, "Health",         "parse_method: service"
 assert_eq $pm->{method},  "Check",          "parse_method: method"
 
+# build_method: inverse of parse_method.
+assert_eq Grpc::build_method(package => "grpc.health.v1", service => "Health", method => "Check")->{path}, "/grpc.health.v1.Health/Check", "build_method: dotted package path"
+assert_eq Grpc::build_method(service => "Health", method => "Check")->{path}, "/Health/Check", "build_method: no package → bare service"
+assert_dies fn { Grpc::build_method(method => "Check") }, "build_method: missing service errors"
+
 assert_eq Grpc::is_binary_key("trace-bin"), 1,  "is_binary_key: -bin suffix"
 assert_eq Grpc::is_binary_key("x-api-key"), 0, "is_binary_key: ascii key"
 

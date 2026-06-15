@@ -809,6 +809,35 @@ fn op_parse_method(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Build a gRPC method path from parts — the inverse of `parse_method`. opts:
+/// `service` (required), `method` (required), and an optional `package` that is
+/// dotted onto the service. Emits the leading-slash form `/pkg.Service/Method`
+/// that grpc uses on the wire. Pure.
+fn op_build_method(opts: Value) -> Result<Value> {
+    let service = opts
+        .get("service")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing service"))?;
+    let method = opts
+        .get("method")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing method"))?;
+    let package = opts
+        .get("package")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let full_service = match package {
+        Some(pkg) => format!("{pkg}.{service}"),
+        None => service.to_string(),
+    };
+    Ok(json!({
+        "path": format!("/{full_service}/{method}"),
+        "full_service": full_service,
+    }))
+}
+
 /// Whether a metadata key is binary by the gRPC `-bin` suffix convention
 /// (binary values are base64-encoded on the wire). Pure.
 fn op_is_binary_key(opts: Value) -> Result<Value> {
@@ -876,6 +905,11 @@ pub extern "C" fn grpc__status_codes(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__parse_method(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_method(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__build_method(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_method(opts) })
 }
 
 #[no_mangle]
@@ -1415,6 +1449,29 @@ mod tests {
         assert!(op_parse_method(json!({"method": "no-slash"})).is_err());
         assert!(op_parse_method(json!({"method": "/Service/"})).is_err());
         assert!(op_parse_method(json!({})).is_err());
+    }
+
+    #[test]
+    fn build_method_inverts_parse_method() {
+        // Full dotted package round-trips through parse.
+        let b = op_build_method(json!({
+            "package": "grpc.health.v1", "service": "Health", "method": "Check"
+        }))
+        .unwrap();
+        assert_eq!(b["path"], json!("/grpc.health.v1.Health/Check"));
+        assert_eq!(b["full_service"], json!("grpc.health.v1.Health"));
+        let back = op_parse_method(json!({"method": b["path"].as_str().unwrap()})).unwrap();
+        assert_eq!(back["package"], json!("grpc.health.v1"));
+        assert_eq!(back["service"], json!("Health"));
+        assert_eq!(back["method"], json!("Check"));
+        // No package → bare service.
+        assert_eq!(
+            op_build_method(json!({"service": "Health", "method": "Check"})).unwrap()["path"],
+            json!("/Health/Check")
+        );
+        // Missing service or method errors.
+        assert!(op_build_method(json!({"method": "Check"})).is_err());
+        assert!(op_build_method(json!({"service": "Health"})).is_err());
     }
 
     #[test]

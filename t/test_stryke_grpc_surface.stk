@@ -26,4 +26,10 @@ assert_ok exists &Grpc::server_stream, "Grpc::server_stream exists"
 assert_ok exists &Grpc::client_stream, "Grpc::client_stream exists"
 assert_ok exists &Grpc::bidi_stream, "Grpc::bidi_stream exists"
 
+# ── pure helpers (no channel) ──
+assert_ok exists &Grpc::parse_method, "Grpc::parse_method exists"
+assert_ok exists &Grpc::build_method, "Grpc::build_method exists"
+assert_ok exists &Grpc::is_binary_key, "Grpc::is_binary_key exists"
+assert_ok exists &Grpc::status_codes, "Grpc::status_codes exists"
+
 test_run
