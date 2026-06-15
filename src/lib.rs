@@ -891,6 +891,52 @@ fn op_parse_timeout(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Encode a duration in nanoseconds as a `grpc-timeout` header value — the
+/// inverse of `parse_timeout`. Faithful port of grpc-go's `EncodeDuration`:
+/// picks the finest unit (n→u→m→S→M→H) whose value fits in 8 digits
+/// (`maxTimeoutValue` = 99999999), rounding the value *up*; `nanos == 0` gives
+/// `"0n"`, and Hour is the last-resort unit with no cap. opts: `nanos`
+/// (required). Returns `{timeout, value, unit}`. Pure.
+fn op_build_timeout(opts: Value) -> Result<Value> {
+    const MAX: u64 = 100_000_000 - 1;
+    // round-up division, matching grpc-go's `div`.
+    fn div_up(d: u64, r: u64) -> u64 {
+        if d.is_multiple_of(r) {
+            d / r
+        } else {
+            d / r + 1
+        }
+    }
+    let nanos = opts
+        .get("nanos")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("missing nanos"))?;
+    if nanos == 0 {
+        return Ok(json!({"timeout": "0n", "value": 0, "unit": "n"}));
+    }
+    // (nanos-per-unit, suffix), finest to coarsest.
+    let units: [(u64, char); 6] = [
+        (1, 'n'),
+        (1_000, 'u'),
+        (1_000_000, 'm'),
+        (1_000_000_000, 'S'),
+        (60_000_000_000, 'M'),
+        (3_600_000_000_000, 'H'),
+    ];
+    let last = units.len() - 1;
+    for (i, (per_unit, suffix)) in units.iter().enumerate() {
+        let value = div_up(nanos, *per_unit);
+        if value <= MAX || i == last {
+            return Ok(json!({
+                "timeout": format!("{value}{suffix}"),
+                "value": value,
+                "unit": suffix.to_string(),
+            }));
+        }
+    }
+    unreachable!("hour is the last-resort unit")
+}
+
 /// Parse a gRPC method path `/package.Service/Method` into its parts. Pure.
 fn op_parse_method(opts: Value) -> Result<Value> {
     let path = opts
@@ -1023,6 +1069,11 @@ pub extern "C" fn grpc__grpc_status_for_http(args: *const c_char) -> *const c_ch
 #[no_mangle]
 pub extern "C" fn grpc__parse_timeout(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_timeout(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__build_timeout(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_timeout(opts) })
 }
 
 #[no_mangle]
@@ -1654,6 +1705,46 @@ mod tests {
         assert!(op_parse_timeout(json!({"timeout": "100"})).is_err());
         assert!(op_parse_timeout(json!({"timeout": "100x"})).is_err());
         assert!(op_parse_timeout(json!({})).is_err());
+    }
+
+    #[test]
+    fn build_timeout_encodes_finest_fitting_unit() {
+        // Zero → "0n", matching grpc-go.
+        assert_eq!(
+            op_build_timeout(json!({"nanos": 0})).unwrap()["timeout"],
+            json!("0n")
+        );
+        // 250ns fits in nanoseconds.
+        assert_eq!(
+            op_build_timeout(json!({"nanos": 250})).unwrap()["timeout"],
+            json!("250n")
+        );
+        // 100ms = 1e8 ns: nanoseconds (100000000) exceeds the 8-digit cap, so it
+        // steps up to microseconds → 100000u.
+        let ms = op_build_timeout(json!({"nanos": 100_000_000u64})).unwrap();
+        assert_eq!(ms["timeout"], json!("100000u"));
+        assert_eq!(ms["unit"], json!("u"));
+        // 5 minutes = 3e11 ns: milliseconds is the finest unit that fits in 8
+        // digits (300000 ≤ 99999999), so grpc-go emits "300000m" — not "300S".
+        assert_eq!(
+            op_build_timeout(json!({"nanos": 300_000_000_000u64})).unwrap()["timeout"],
+            json!("300000m")
+        );
+        // div rounds up when stepping to a coarser unit: 100000001ns doesn't fit
+        // in nanoseconds (9 digits), and microseconds = 100000.001 rounds up to
+        // 100001u (not truncated to 100000u).
+        assert_eq!(
+            op_build_timeout(json!({"nanos": 100_000_001u64})).unwrap()["timeout"],
+            json!("100001u")
+        );
+        // Round-trips through parse_timeout on the nanosecond value for
+        // unit-aligned durations.
+        for nanos in [250u64, 5_000_000, 30_000_000_000, 7_200_000_000_000] {
+            let enc = op_build_timeout(json!({ "nanos": nanos })).unwrap();
+            let back = op_parse_timeout(json!({ "timeout": enc["timeout"] })).unwrap();
+            assert_eq!(back["nanos"], json!(nanos), "round-trip {nanos}ns");
+        }
+        assert!(op_build_timeout(json!({})).is_err());
     }
 
     #[test]

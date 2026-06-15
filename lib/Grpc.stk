@@ -158,6 +158,13 @@ fn Grpc::parse_timeout ($timeout) {
     Grpc::_decode("parse_timeout", grpc__parse_timeout(to_json({ timeout => $timeout })))
 }
 
+## Encode $nanos as a grpc-timeout header value — inverse of parse_timeout.
+## Picks the finest unit (n/u/m/S/M/H) whose value fits in 8 digits, rounding
+## up; 0 → "0n". Returns { timeout, value, unit }.
+fn Grpc::build_timeout ($nanos) {
+    Grpc::_decode("build_timeout", grpc__build_timeout(to_json({ nanos => $nanos })))
+}
+
 ## Build a gRPC method path from parts — inverse of parse_method. opts: service
 ## (required), method (required), package (optional, dotted onto the service).
 ## Returns a hashref { path, full_service }.

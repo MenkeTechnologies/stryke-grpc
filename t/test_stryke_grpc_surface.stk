@@ -29,6 +29,7 @@ assert_ok exists &Grpc::bidi_stream, "Grpc::bidi_stream exists"
 # ── pure helpers (no channel) ──
 assert_ok exists &Grpc::parse_method, "Grpc::parse_method exists"
 assert_ok exists &Grpc::parse_timeout, "Grpc::parse_timeout exists"
+assert_ok exists &Grpc::build_timeout, "Grpc::build_timeout exists"
 assert_ok exists &Grpc::build_method, "Grpc::build_method exists"
 assert_ok exists &Grpc::is_binary_key, "Grpc::is_binary_key exists"
 assert_ok exists &Grpc::status_codes, "Grpc::status_codes exists"

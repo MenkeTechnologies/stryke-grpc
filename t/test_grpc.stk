@@ -82,6 +82,15 @@ assert_eq Grpc::parse_timeout("5m")->{nanos}, 5000000,      "parse_timeout: 5m i
 assert_eq Grpc::parse_timeout("30S")->{unit_name}, "Second", "parse_timeout: S is Second"
 assert_dies fn { Grpc::parse_timeout("100x") }, "parse_timeout: rejects an unknown unit"
 
+# build_timeout: inverse — encode nanos as a grpc-timeout header value.
+assert_eq Grpc::build_timeout(0)->{timeout},   "0n",       "build_timeout: zero is 0n"
+assert_eq Grpc::build_timeout(250)->{timeout}, "250n",     "build_timeout: 250ns stays nanoseconds"
+assert_eq Grpc::build_timeout(100000000)->{timeout}, "100000u", "build_timeout: 100ms steps up to microseconds (8-digit cap)"
+assert_eq Grpc::build_timeout(300000000000)->{timeout}, "300000m", "build_timeout: 5 minutes is 300000m (finest unit ≤ 8 digits)"
+assert_eq Grpc::build_timeout(100000001)->{timeout}, "100001u", "build_timeout: rounds up when stepping unit (100000001ns → 100001u)"
+assert_eq Grpc::parse_timeout(Grpc::build_timeout(30000000000)->{timeout})->{nanos}, 30000000000, "build_timeout: round-trips through parse_timeout"
+assert_dies fn { Grpc::build_timeout() }, "build_timeout: requires nanos"
+
 val $pm = Grpc::parse_method("/grpc.health.v1.Health/Check")
 assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
 assert_eq $pm->{service}, "Health",         "parse_method: service"
