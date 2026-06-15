@@ -130,6 +130,13 @@ fn Grpc::status_codes {
     @{ Grpc::_decode("status_codes", grpc__status_codes("{}"))->{codes} }
 }
 
+## Map a gRPC status (name or numeric code) to the HTTP status grpc-gateway
+## returns for it → { code, name, http_status }.
+fn Grpc::http_status_for ($name_or_code) {
+    val $req = ($name_or_code =~ /^\d+$/) ? { code => $name_or_code + 0 } : { name => $name_or_code }
+    Grpc::_decode("http_status_for", grpc__http_status_for(to_json($req)))
+}
+
 ## Parse a gRPC method path "/package.Service/Method" →
 ## { full_service, package, service, method }.
 fn Grpc::parse_method ($method) {

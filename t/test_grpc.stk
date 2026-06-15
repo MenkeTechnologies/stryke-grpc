@@ -57,6 +57,12 @@ val @codes = Grpc::status_codes()
 assert_eq scalar(@codes), 17, "status_codes: 17 canonical codes"
 assert_eq $codes[0]->{name}, "OK", "status_codes: OK is first"
 
+# http_status_for: grpc-gateway gRPC→HTTP mapping (by name and by code).
+assert_eq Grpc::http_status_for("NOT_FOUND")->{http_status}, 404, "http_status_for: NOT_FOUND → 404"
+assert_eq Grpc::http_status_for(16)->{http_status}, 401, "http_status_for: UNAUTHENTICATED(16) → 401"
+assert_eq Grpc::http_status_for("OK")->{http_status}, 200, "http_status_for: OK → 200"
+assert_dies fn { Grpc::http_status_for("BOGUS") }, "http_status_for: rejects unknown status"
+
 val $pm = Grpc::parse_method("/grpc.health.v1.Health/Check")
 assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
 assert_eq $pm->{service}, "Health",         "parse_method: service"

@@ -751,27 +751,60 @@ const STATUS_CODES: &[(&str, tonic::Code)] = &[
     ("UNAUTHENTICATED", tonic::Code::Unauthenticated),
 ];
 
+/// Resolve a gRPC status from `name` or numeric `code` to its canonical
+/// `(name, code)` pair. Shared by `status_code` and `http_status_for`.
+fn resolve_status(opts: &Value) -> Result<(&'static str, i32)> {
+    if let Some(name) = opts.get("name").and_then(Value::as_str) {
+        let upper = name.to_ascii_uppercase();
+        return STATUS_CODES
+            .iter()
+            .find(|(n, _)| *n == upper)
+            .map(|(n, c)| (*n, i32::from(*c)))
+            .ok_or_else(|| anyhow!("unknown gRPC status name: {name}"));
+    }
+    if let Some(code) = opts.get("code").and_then(Value::as_i64) {
+        return STATUS_CODES
+            .iter()
+            .find(|(_, c)| i64::from(i32::from(*c)) == code)
+            .map(|(n, c)| (*n, i32::from(*c)))
+            .ok_or_else(|| anyhow!("unknown gRPC status code: {code}"));
+    }
+    Err(anyhow!("requires `name` or `code`"))
+}
+
 /// Resolve a gRPC status by `name` (e.g. "NOT_FOUND") or numeric `code`,
 /// returning `{code, name}`. Pure — no channel.
 fn op_status_code(opts: Value) -> Result<Value> {
-    if let Some(name) = opts.get("name").and_then(Value::as_str) {
-        let upper = name.to_ascii_uppercase();
-        let hit = STATUS_CODES.iter().find(|(n, _)| *n == upper);
-        return match hit {
-            Some((n, c)) => Ok(json!({"code": i32::from(*c), "name": *n})),
-            None => Err(anyhow!("unknown gRPC status name: {name}")),
-        };
-    }
-    if let Some(code) = opts.get("code").and_then(Value::as_i64) {
-        let hit = STATUS_CODES
-            .iter()
-            .find(|(_, c)| i64::from(i32::from(*c)) == code);
-        return match hit {
-            Some((n, c)) => Ok(json!({"code": i32::from(*c), "name": *n})),
-            None => Err(anyhow!("unknown gRPC status code: {code}")),
-        };
-    }
-    Err(anyhow!("status_code requires `name` or `code`"))
+    let (name, code) = resolve_status(&opts)?;
+    Ok(json!({"code": code, "name": name}))
+}
+
+/// Map a gRPC status (by `name` or `code`) to the HTTP status code grpc-gateway
+/// returns for it (`runtime.HTTPStatusFromCode`). Returns
+/// `{code, name, http_status}`. Pure.
+fn op_http_status_for(opts: Value) -> Result<Value> {
+    let (name, code) = resolve_status(&opts)?;
+    let http: u16 = match name {
+        "OK" => 200,
+        "CANCELLED" => 499,
+        "UNKNOWN" => 500,
+        "INVALID_ARGUMENT" => 400,
+        "DEADLINE_EXCEEDED" => 504,
+        "NOT_FOUND" => 404,
+        "ALREADY_EXISTS" => 409,
+        "PERMISSION_DENIED" => 403,
+        "RESOURCE_EXHAUSTED" => 429,
+        "FAILED_PRECONDITION" => 400,
+        "ABORTED" => 409,
+        "OUT_OF_RANGE" => 400,
+        "UNIMPLEMENTED" => 501,
+        "INTERNAL" => 500,
+        "UNAVAILABLE" => 503,
+        "DATA_LOSS" => 500,
+        "UNAUTHENTICATED" => 401,
+        _ => 500,
+    };
+    Ok(json!({"code": code, "name": name, "http_status": http}))
 }
 
 /// The full gRPC status enum as `{code, name}` rows, in numeric order.
@@ -900,6 +933,11 @@ pub extern "C" fn grpc__status_code(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__status_codes(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_status_codes(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__http_status_for(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_http_status_for(opts) })
 }
 
 #[no_mangle]
@@ -1423,6 +1461,38 @@ mod tests {
         assert_eq!(codes[0]["name"], json!("OK"));
         assert_eq!(codes[0]["code"], json!(0));
         assert_eq!(codes[16]["name"], json!("UNAUTHENTICATED"));
+    }
+
+    #[test]
+    fn http_status_for_matches_grpc_gateway_mapping() {
+        // By name and by number resolve to the same HTTP status.
+        let nf = op_http_status_for(json!({"name": "NOT_FOUND"})).unwrap();
+        assert_eq!(nf["http_status"], json!(404));
+        assert_eq!(nf["code"], json!(5));
+        assert_eq!(
+            op_http_status_for(json!({"code": 5})).unwrap()["http_status"],
+            json!(404)
+        );
+        // Spot-check the documented grpc-gateway table.
+        for (name, http) in [
+            ("OK", 200),
+            ("INVALID_ARGUMENT", 400),
+            ("UNAUTHENTICATED", 401),
+            ("PERMISSION_DENIED", 403),
+            ("ALREADY_EXISTS", 409),
+            ("RESOURCE_EXHAUSTED", 429),
+            ("UNIMPLEMENTED", 501),
+            ("UNAVAILABLE", 503),
+            ("DEADLINE_EXCEEDED", 504),
+            ("CANCELLED", 499),
+        ] {
+            assert_eq!(
+                op_http_status_for(json!({"name": name})).unwrap()["http_status"],
+                json!(http),
+                "{name} → {http}"
+            );
+        }
+        assert!(op_http_status_for(json!({"name": "BOGUS"})).is_err());
     }
 
     #[test]
