@@ -46,4 +46,23 @@ if (defined $target && $target ne "") {
     }
 }
 
+# ── pure helpers (no server needed — always run) ─────────────────────
+val $nf = Grpc::status_code("NOT_FOUND")
+assert_eq $nf->{code}, 5,           "status_code: NOT_FOUND is 5"
+assert_eq $nf->{name}, "NOT_FOUND", "status_code: name echoed"
+assert_eq Grpc::status_code(14)->{name}, "UNAVAILABLE", "status_code: numeric → name"
+assert_eq Grpc::status_code("unavailable")->{code}, 14, "status_code: case-insensitive name"
+
+val @codes = Grpc::status_codes()
+assert_eq scalar(@codes), 17, "status_codes: 17 canonical codes"
+assert_eq $codes[0]->{name}, "OK", "status_codes: OK is first"
+
+val $pm = Grpc::parse_method("/grpc.health.v1.Health/Check")
+assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
+assert_eq $pm->{service}, "Health",         "parse_method: service"
+assert_eq $pm->{method},  "Check",          "parse_method: method"
+
+assert_eq Grpc::is_binary_key("trace-bin"), 1,  "is_binary_key: -bin suffix"
+assert_eq Grpc::is_binary_key("x-api-key"), 0, "is_binary_key: ascii key"
+
 test_run

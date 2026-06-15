@@ -726,6 +726,99 @@ pub unsafe extern "C" fn stryke_free_cstring(p: *mut c_char) {
     drop(CString::from_raw(p));
 }
 
+// ── pure helpers (no connection) ─────────────────────────────────────────────
+
+/// Canonical gRPC status names paired with `tonic::Code`. The numeric value
+/// is taken from `tonic` (`i32::from`), so only the standard SCREAMING_SNAKE
+/// names live here; the codes themselves stay library-sourced.
+const STATUS_CODES: &[(&str, tonic::Code)] = &[
+    ("OK", tonic::Code::Ok),
+    ("CANCELLED", tonic::Code::Cancelled),
+    ("UNKNOWN", tonic::Code::Unknown),
+    ("INVALID_ARGUMENT", tonic::Code::InvalidArgument),
+    ("DEADLINE_EXCEEDED", tonic::Code::DeadlineExceeded),
+    ("NOT_FOUND", tonic::Code::NotFound),
+    ("ALREADY_EXISTS", tonic::Code::AlreadyExists),
+    ("PERMISSION_DENIED", tonic::Code::PermissionDenied),
+    ("RESOURCE_EXHAUSTED", tonic::Code::ResourceExhausted),
+    ("FAILED_PRECONDITION", tonic::Code::FailedPrecondition),
+    ("ABORTED", tonic::Code::Aborted),
+    ("OUT_OF_RANGE", tonic::Code::OutOfRange),
+    ("UNIMPLEMENTED", tonic::Code::Unimplemented),
+    ("INTERNAL", tonic::Code::Internal),
+    ("UNAVAILABLE", tonic::Code::Unavailable),
+    ("DATA_LOSS", tonic::Code::DataLoss),
+    ("UNAUTHENTICATED", tonic::Code::Unauthenticated),
+];
+
+/// Resolve a gRPC status by `name` (e.g. "NOT_FOUND") or numeric `code`,
+/// returning `{code, name}`. Pure — no channel.
+fn op_status_code(opts: Value) -> Result<Value> {
+    if let Some(name) = opts.get("name").and_then(Value::as_str) {
+        let upper = name.to_ascii_uppercase();
+        let hit = STATUS_CODES.iter().find(|(n, _)| *n == upper);
+        return match hit {
+            Some((n, c)) => Ok(json!({"code": i32::from(*c), "name": *n})),
+            None => Err(anyhow!("unknown gRPC status name: {name}")),
+        };
+    }
+    if let Some(code) = opts.get("code").and_then(Value::as_i64) {
+        let hit = STATUS_CODES
+            .iter()
+            .find(|(_, c)| i64::from(i32::from(*c)) == code);
+        return match hit {
+            Some((n, c)) => Ok(json!({"code": i32::from(*c), "name": *n})),
+            None => Err(anyhow!("unknown gRPC status code: {code}")),
+        };
+    }
+    Err(anyhow!("status_code requires `name` or `code`"))
+}
+
+/// The full gRPC status enum as `{code, name}` rows, in numeric order.
+fn op_status_codes(_opts: Value) -> Result<Value> {
+    let codes: Vec<Value> = STATUS_CODES
+        .iter()
+        .map(|(n, c)| json!({"code": i32::from(*c), "name": *n}))
+        .collect();
+    Ok(json!({"codes": codes}))
+}
+
+/// Parse a gRPC method path `/package.Service/Method` into its parts. Pure.
+fn op_parse_method(opts: Value) -> Result<Value> {
+    let path = opts
+        .get("method")
+        .or_else(|| opts.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing method"))?;
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
+    let (full_service, method) = trimmed
+        .rsplit_once('/')
+        .ok_or_else(|| anyhow!("not a gRPC method path (want /package.Service/Method): {path}"))?;
+    if full_service.is_empty() || method.is_empty() {
+        return Err(anyhow!("method path missing service or method: {path}"));
+    }
+    let (package, service) = match full_service.rsplit_once('.') {
+        Some((pkg, svc)) => (Some(pkg), svc),
+        None => (None, full_service),
+    };
+    Ok(json!({
+        "full_service": full_service,
+        "service": service,
+        "package": package,
+        "method": method,
+    }))
+}
+
+/// Whether a metadata key is binary by the gRPC `-bin` suffix convention
+/// (binary values are base64-encoded on the wire). Pure.
+fn op_is_binary_key(opts: Value) -> Result<Value> {
+    let key = opts
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing key"))?;
+    Ok(json!({"key": key, "binary": key.ends_with("-bin")}))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -768,6 +861,26 @@ pub extern "C" fn grpc__client_stream(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__bidi_stream(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_bidi_stream)
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__status_code(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_status_code(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__status_codes(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_status_codes(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_method(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_method(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__is_binary_key(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_is_binary_key(opts) })
 }
 
 #[cfg(test)]
@@ -1239,5 +1352,80 @@ mod tests {
             .use_enum_numbers(true)
             .stringify_64_bit_integers(true);
         assert_eq!(format!("{o:?}"), format!("{expect_over:?}"));
+    }
+
+    // ── pure helpers (no connection) ─────────────────────────────────────────
+
+    #[test]
+    fn status_code_by_name_and_number_agree_with_tonic() {
+        let by_name = op_status_code(json!({"name": "NOT_FOUND"})).unwrap();
+        assert_eq!(by_name["code"], json!(i32::from(tonic::Code::NotFound)));
+        assert_eq!(by_name["name"], json!("NOT_FOUND"));
+        // The numeric form resolves back to the same name.
+        let by_code = op_status_code(json!({"code": by_name["code"].clone()})).unwrap();
+        assert_eq!(by_code["name"], json!("NOT_FOUND"));
+    }
+
+    #[test]
+    fn status_code_name_is_case_insensitive() {
+        let v = op_status_code(json!({"name": "unavailable"})).unwrap();
+        assert_eq!(v["name"], json!("UNAVAILABLE"));
+        assert_eq!(v["code"], json!(i32::from(tonic::Code::Unavailable)));
+    }
+
+    #[test]
+    fn status_code_rejects_unknown_and_empty() {
+        assert!(op_status_code(json!({"name": "NOPE"})).is_err());
+        assert!(op_status_code(json!({"code": 999})).is_err());
+        assert!(op_status_code(json!({})).is_err());
+    }
+
+    #[test]
+    fn status_codes_lists_the_full_enum() {
+        let v = op_status_codes(json!({})).unwrap();
+        let codes = v["codes"].as_array().unwrap();
+        assert_eq!(codes.len(), 17, "gRPC defines 17 status codes (0..=16)");
+        // OK is 0, UNAUTHENTICATED is the last (16).
+        assert_eq!(codes[0]["name"], json!("OK"));
+        assert_eq!(codes[0]["code"], json!(0));
+        assert_eq!(codes[16]["name"], json!("UNAUTHENTICATED"));
+    }
+
+    #[test]
+    fn parse_method_splits_package_service_method() {
+        let v = op_parse_method(json!({"method": "/helloworld.Greeter/SayHello"})).unwrap();
+        assert_eq!(v["full_service"], json!("helloworld.Greeter"));
+        assert_eq!(v["package"], json!("helloworld"));
+        assert_eq!(v["service"], json!("Greeter"));
+        assert_eq!(v["method"], json!("SayHello"));
+    }
+
+    #[test]
+    fn parse_method_handles_no_package_and_dotted_package() {
+        let np = op_parse_method(json!({"method": "/Health/Check"})).unwrap();
+        assert_eq!(np["service"], json!("Health"));
+        assert_eq!(np["package"], Value::Null, "no dot → null package");
+        let dp = op_parse_method(json!({"method": "/grpc.health.v1.Health/Check"})).unwrap();
+        assert_eq!(dp["package"], json!("grpc.health.v1"));
+        assert_eq!(dp["service"], json!("Health"));
+    }
+
+    #[test]
+    fn parse_method_rejects_malformed_paths() {
+        assert!(op_parse_method(json!({"method": "no-slash"})).is_err());
+        assert!(op_parse_method(json!({"method": "/Service/"})).is_err());
+        assert!(op_parse_method(json!({})).is_err());
+    }
+
+    #[test]
+    fn is_binary_key_follows_bin_suffix() {
+        assert_eq!(
+            op_is_binary_key(json!({"key": "trace-bin"})).unwrap()["binary"],
+            json!(true)
+        );
+        assert_eq!(
+            op_is_binary_key(json!({"key": "x-api-key"})).unwrap()["binary"],
+            json!(false)
+        );
     }
 }

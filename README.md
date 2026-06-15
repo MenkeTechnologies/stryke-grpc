@@ -169,6 +169,15 @@ Grpc::ping          %opts → 1 | ""
 Grpc::version() → $version_string    # cdylib's CARGO_PKG_VERSION
 ```
 
+Pure helpers — string/status utilities that open no connection:
+
+```stryke
+Grpc::status_code($name_or_code) → \%{ code, name }   # "NOT_FOUND" ⇄ 5 (codes from tonic)
+Grpc::status_codes()             → @{ {code, name} }   # the full 17-code enum
+Grpc::parse_method($method)      → \%{ full_service, package, service, method }
+Grpc::is_binary_key($key)        → 1 | ""              # gRPC "-bin" metadata convention
+```
+
 `$symbol` for `describe` is one of:
 
 * `"pkg.Service"` → service info + method list
@@ -207,10 +216,13 @@ replies. `max_messages` caps a drain.
 Each `Grpc::*` wrapper builds a JSON args dict and calls a sibling
 `grpc__*` symbol resolved out of `libstryke_grpc.{dylib,so}`. The
 cdylib is dlopened in-process on first `use Grpc` (via stryke's
-`pkg::commands::try_load_ffi_for` resolver hook) and exposes 8 entry
-points: `grpc__pkg_version`, `grpc__ping`, `grpc__list`,
+`pkg::commands::try_load_ffi_for` resolver hook). Its exports cover the
+RPC surface (`grpc__pkg_version`, `grpc__ping`, `grpc__list`,
 `grpc__describe`, `grpc__call`, `grpc__server_stream`,
-`grpc__client_stream`, `grpc__bidi_stream`.
+`grpc__client_stream`, `grpc__bidi_stream`) and connection-free helpers
+(`grpc__status_code`, `grpc__status_codes`, `grpc__parse_method`,
+`grpc__is_binary_key`). The authoritative list is `[ffi].exports` in
+`stryke.toml`.
 
 Errors come back as a `{error}` JSON payload; the stryke wrapper dies
 with `Grpc::<op>: <reason>`.

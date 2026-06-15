@@ -110,7 +110,7 @@
         <thead><tr><th>Layer</th><th>Implementation</th></tr></thead>
         <tbody>
           <tr><td>stryke wrappers (<code>lib/*.stk</code>)</td><td>Thin <code>Grpc.stk</code> wrapper (<code>use Grpc</code>); each public fn serializes args to JSON and parses the response</td></tr>
-          <tr><td>cdylib (<code>libstryke_grpc.{dylib,so}</code>)</td><td>Single Rust <code>cdylib</code> crate; 8 entry points exported as <code>extern "C" fn grpc__&lt;verb&gt;(*const c_char) -&gt; *mut c_char</code></td></tr>
+          <tr><td>cdylib (<code>libstryke_grpc.{dylib,so}</code>)</td><td>Single Rust <code>cdylib</code> crate; entry points (8 RPC verbs + 4 connection-free helpers) exported as <code>extern "C" fn grpc__&lt;verb&gt;(*const c_char) -&gt; *mut c_char</code></td></tr>
           <tr><td>Process model</td><td>Library is <code>dlopen</code>'d once per stryke session on first <code>use Grpc</code>; a shared tokio runtime + <code>tonic::Channel</code> cache per endpoint + <code>DescriptorPool</code> cache per (endpoint, symbol) held in <code>OnceCell</code>; lives until the runtime exits</td></tr>
           <tr><td>Build</td><td>Cargo with <code>[lib] crate-type = ["cdylib"]</code>; <code>publish = false</code>; the package itself ships via <code>s pkg install -g .</code></td></tr>
           <tr><td>Install path</td><td><code>~/.stryke/store/grpc@&lt;version&gt;/</code> after <code>make install</code>; <code>use Grpc</code> from any stryke script resolves it</td></tr>
