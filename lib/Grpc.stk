@@ -137,6 +137,14 @@ fn Grpc::http_status_for ($name_or_code) {
     Grpc::_decode("http_status_for", grpc__http_status_for(to_json($req)))
 }
 
+## Map an HTTP status to the gRPC status a client synthesizes for it — the gRPC
+## spec's HTTP→gRPC table (http-grpc-status-mapping.md). NOT the inverse of
+## http_status_for. Returns { http_status, code, name }.
+fn Grpc::grpc_status_for_http ($http_status) {
+    Grpc::_decode("grpc_status_for_http",
+        grpc__grpc_status_for_http(to_json({ http_status => $http_status + 0 })))
+}
+
 ## Parse a gRPC method path "/package.Service/Method" →
 ## { full_service, package, service, method }.
 fn Grpc::parse_method ($method) {

@@ -807,6 +807,36 @@ fn op_http_status_for(opts: Value) -> Result<Value> {
     Ok(json!({"code": code, "name": name, "http_status": http}))
 }
 
+/// Map an HTTP status to the gRPC status a client should synthesize when it
+/// receives that HTTP response instead of a gRPC trailer — the gRPC spec's
+/// "HTTP to gRPC Status Code Mapping" (`doc/http-grpc-status-mapping.md`). This
+/// is a distinct, documented table, NOT the inverse of `http_status_for`: e.g.
+/// 400 → INTERNAL, 401 → UNAUTHENTICATED, 404 → UNIMPLEMENTED, 502/503/429 →
+/// UNAVAILABLE, 504 → DEADLINE_EXCEEDED, and any other status → UNKNOWN. opts:
+/// `http_status` (required). Returns `{http_status, code, name}`. Pure.
+fn op_grpc_status_for_http(opts: Value) -> Result<Value> {
+    let http = opts
+        .get("http_status")
+        .or_else(|| opts.get("status"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("missing http_status"))?;
+    let name = match http {
+        400 => "INTERNAL",
+        401 => "UNAUTHENTICATED",
+        403 => "PERMISSION_DENIED",
+        404 => "UNIMPLEMENTED",
+        429 | 502 | 503 => "UNAVAILABLE",
+        504 => "DEADLINE_EXCEEDED",
+        _ => "UNKNOWN",
+    };
+    let code = STATUS_CODES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, c)| i32::from(*c))
+        .expect("mapped status name is always in STATUS_CODES");
+    Ok(json!({"http_status": http, "code": code, "name": name}))
+}
+
 /// The full gRPC status enum as `{code, name}` rows, in numeric order.
 fn op_status_codes(_opts: Value) -> Result<Value> {
     let codes: Vec<Value> = STATUS_CODES
@@ -938,6 +968,11 @@ pub extern "C" fn grpc__status_codes(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__http_status_for(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_http_status_for(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__grpc_status_for_http(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_grpc_status_for_http(opts) })
 }
 
 #[no_mangle]
@@ -1493,6 +1528,43 @@ mod tests {
             );
         }
         assert!(op_http_status_for(json!({"name": "BOGUS"})).is_err());
+    }
+
+    #[test]
+    fn grpc_status_for_http_matches_spec_mapping() {
+        // The documented HTTP → gRPC table (http-grpc-status-mapping.md).
+        for (http, name, code) in [
+            (400, "INTERNAL", 13),
+            (401, "UNAUTHENTICATED", 16),
+            (403, "PERMISSION_DENIED", 7),
+            (404, "UNIMPLEMENTED", 12),
+            (429, "UNAVAILABLE", 14),
+            (502, "UNAVAILABLE", 14),
+            (503, "UNAVAILABLE", 14),
+            (504, "DEADLINE_EXCEEDED", 4),
+        ] {
+            let v = op_grpc_status_for_http(json!({ "http_status": http })).unwrap();
+            assert_eq!(v["name"], json!(name), "{http} → {name}");
+            assert_eq!(v["code"], json!(code), "{http} → code {code}");
+        }
+        // Anything outside the table falls through to UNKNOWN(2) — including a
+        // generic 500 and 200 (whose real status lives in the gRPC trailer).
+        for http in [200, 418, 500, 501, 505] {
+            let v = op_grpc_status_for_http(json!({ "http_status": http })).unwrap();
+            assert_eq!(v["name"], json!("UNKNOWN"), "{http} → UNKNOWN");
+            assert_eq!(v["code"], json!(2));
+        }
+        // This is NOT the inverse of http_status_for: 404 → UNIMPLEMENTED here,
+        // but UNIMPLEMENTED → 501 there.
+        assert_eq!(
+            op_grpc_status_for_http(json!({"http_status": 404})).unwrap()["name"],
+            json!("UNIMPLEMENTED")
+        );
+        assert_eq!(
+            op_http_status_for(json!({"name": "UNIMPLEMENTED"})).unwrap()["http_status"],
+            json!(501)
+        );
+        assert!(op_grpc_status_for_http(json!({})).is_err());
     }
 
     #[test]

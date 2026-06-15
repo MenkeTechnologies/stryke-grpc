@@ -63,6 +63,15 @@ assert_eq Grpc::http_status_for(16)->{http_status}, 401, "http_status_for: UNAUT
 assert_eq Grpc::http_status_for("OK")->{http_status}, 200, "http_status_for: OK → 200"
 assert_dies fn { Grpc::http_status_for("BOGUS") }, "http_status_for: rejects unknown status"
 
+# grpc_status_for_http: gRPC spec HTTP→gRPC mapping (distinct table, not inverse).
+val $g404 = Grpc::grpc_status_for_http(404)
+assert_eq $g404->{name}, "UNIMPLEMENTED", "grpc_status_for_http: 404 → UNIMPLEMENTED"
+assert_eq $g404->{code}, 12,              "grpc_status_for_http: 404 → code 12"
+assert_eq Grpc::grpc_status_for_http(401)->{name}, "UNAUTHENTICATED", "grpc_status_for_http: 401 → UNAUTHENTICATED"
+assert_eq Grpc::grpc_status_for_http(503)->{name}, "UNAVAILABLE",     "grpc_status_for_http: 503 → UNAVAILABLE"
+assert_eq Grpc::grpc_status_for_http(504)->{name}, "DEADLINE_EXCEEDED", "grpc_status_for_http: 504 → DEADLINE_EXCEEDED"
+assert_eq Grpc::grpc_status_for_http(500)->{name}, "UNKNOWN", "grpc_status_for_http: other → UNKNOWN"
+
 val $pm = Grpc::parse_method("/grpc.health.v1.Health/Check")
 assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
 assert_eq $pm->{service}, "Health",         "parse_method: service"
