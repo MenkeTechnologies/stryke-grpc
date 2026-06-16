@@ -181,6 +181,7 @@ Grpc::build_timeout($nanos)      → \%{ timeout, value, unit }   # encode nanos
 Grpc::parse_method($method)      → \%{ full_service, package, service, method }
 Grpc::build_method(%opts)        → \%{ path, full_service }   # parts → /pkg.Service/Method; inverse of parse_method
 Grpc::is_binary_key($key)        → 1 | ""              # gRPC "-bin" metadata convention
+Grpc::valid_metadata_key($key)   → \%{ key, valid, reason, binary }   # Custom-Metadata grammar: lowercase/digit/_-., grpc- reserved
 ```
 
 `$symbol` for `describe` is one of:
@@ -226,7 +227,7 @@ RPC surface (`grpc__pkg_version`, `grpc__ping`, `grpc__list`,
 `grpc__describe`, `grpc__call`, `grpc__server_stream`,
 `grpc__client_stream`, `grpc__bidi_stream`) and connection-free helpers
 (`grpc__status_code`, `grpc__status_codes`, `grpc__http_status_for`, `grpc__parse_method`,
-`grpc__build_method`, `grpc__is_binary_key`). The authoritative list is
+`grpc__build_method`, `grpc__is_binary_key`, `grpc__valid_metadata_key`). The authoritative list is
 `[ffi].exports` in
 `stryke.toml`.
 

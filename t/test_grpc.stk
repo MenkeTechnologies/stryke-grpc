@@ -104,4 +104,11 @@ assert_dies fn { Grpc::build_method(method => "Check") }, "build_method: missing
 assert_eq Grpc::is_binary_key("trace-bin"), 1,  "is_binary_key: -bin suffix"
 assert_eq Grpc::is_binary_key("x-api-key"), 0, "is_binary_key: ascii key"
 
+# valid_metadata_key: Custom-Metadata grammar (lowercase/digit/_-., grpc- reserved).
+assert_ok Grpc::valid_metadata_key("x-api-key")->{valid},   "valid_metadata_key: allowed name"
+assert_ok Grpc::valid_metadata_key("trace-bin")->{binary},  "valid_metadata_key: reports -bin binary flag"
+assert_eq Grpc::valid_metadata_key("X-Caps")->{valid}, 0,   "valid_metadata_key: rejects uppercase"
+assert_eq Grpc::valid_metadata_key("grpc-status")->{valid}, 0, "valid_metadata_key: grpc- prefix reserved"
+assert_eq Grpc::valid_metadata_key("has space")->{valid}, 0, "valid_metadata_key: rejects spaces"
+
 test_run

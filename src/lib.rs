@@ -1002,6 +1002,36 @@ fn op_is_binary_key(opts: Value) -> Result<Value> {
     Ok(json!({"key": key, "binary": key.ends_with("-bin")}))
 }
 
+/// Validate a gRPC Custom-Metadata key against the PROTOCOL-HTTP2 grammar:
+/// `Header-Name` is one or more of lowercase letters, digits, `_`, `-`, and `.`;
+/// the `grpc-` prefix is reserved for gRPC itself and rejected for application
+/// metadata. Also reports `binary` (the `-bin` suffix). opts: `key` (required).
+/// Returns `{key, valid, reason, binary}`. Pure.
+fn op_valid_metadata_key(opts: Value) -> Result<Value> {
+    let key = opts
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing key"))?;
+    let reason: Option<&str> = if key.is_empty() {
+        Some("must not be empty")
+    } else if !key
+        .bytes()
+        .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        Some("only lowercase letters, digits, '_', '-', and '.'")
+    } else if key.starts_with("grpc-") {
+        Some("the `grpc-` prefix is reserved for gRPC")
+    } else {
+        None
+    };
+    Ok(json!({
+        "key": key,
+        "valid": reason.is_none(),
+        "reason": reason,
+        "binary": key.ends_with("-bin"),
+    }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1089,6 +1119,11 @@ pub extern "C" fn grpc__build_method(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__is_binary_key(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_is_binary_key(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__valid_metadata_key(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_metadata_key(opts) })
 }
 
 #[cfg(test)]
@@ -1806,5 +1841,34 @@ mod tests {
             op_is_binary_key(json!({"key": "x-api-key"})).unwrap()["binary"],
             json!(false)
         );
+    }
+
+    #[test]
+    fn valid_metadata_key_follows_custom_metadata_grammar() {
+        let chk = |k: &str| op_valid_metadata_key(json!({ "key": k })).unwrap();
+        // Allowed: lowercase, digits, _ - .
+        assert_eq!(chk("x-api-key")["valid"], json!(true));
+        assert_eq!(chk("trace.id_1")["valid"], json!(true));
+        // The -bin suffix flags binary and is still a valid name.
+        let bin = chk("trace-bin");
+        assert_eq!(bin["valid"], json!(true));
+        assert_eq!(bin["binary"], json!(true));
+        // Rejections.
+        for (k, want) in [
+            ("", "empty"),
+            ("X-Caps", "lowercase"),
+            ("has space", "lowercase"),
+            ("under/slash", "lowercase"),
+            ("grpc-status", "reserved"),
+        ] {
+            let v = chk(k);
+            assert_eq!(v["valid"], json!(false), "`{k}` should be invalid");
+            assert!(
+                v["reason"].as_str().unwrap().contains(want),
+                "`{k}`: reason `{}` should mention `{want}`",
+                v["reason"]
+            );
+        }
+        assert!(op_valid_metadata_key(json!({})).is_err());
     }
 }
