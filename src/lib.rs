@@ -1095,6 +1095,44 @@ fn op_parse_content_type(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Build a gRPC `content-type` header from a codec — the inverse of
+/// `parse_content_type`. With no `codec`, or a truthy `default`, emits the bare
+/// `application/grpc` (proto implied); otherwise `application/grpc+<codec>`. The
+/// codec must be a non-empty token (no whitespace, `/`, or `+`). `build` of a
+/// `parse` result (which carries `codec` + `default`) reproduces the original
+/// header. opts: optional `codec` (default `proto`) and `default` (bool). Returns
+/// `{content_type, type, codec, default}`. Pure.
+fn op_build_content_type(opts: Value) -> Result<Value> {
+    const BASE: &str = "application/grpc";
+    let codec = opts
+        .get("codec")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let want_default = match opts.get("default") {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|x| x != 0.0),
+        _ => false,
+    } || codec.is_none();
+    let codec = codec.unwrap_or("proto");
+    if codec.contains(|c: char| c.is_whitespace() || c == '/' || c == '+') {
+        return Err(anyhow!(
+            "codec must be a token (no whitespace, `/`, or `+`): {codec}"
+        ));
+    }
+    let content_type = if want_default {
+        BASE.to_string()
+    } else {
+        format!("{BASE}+{codec}")
+    };
+    Ok(json!({
+        "content_type": content_type,
+        "type": BASE,
+        "codec": codec,
+        "default": want_default,
+    }))
+}
+
 /// Build a gRPC method path from parts — the inverse of `parse_method`. opts:
 /// `service` (required), `method` (required), and an optional `package` that is
 /// dotted onto the service. Emits the leading-slash form `/pkg.Service/Method`
@@ -1350,6 +1388,11 @@ pub extern "C" fn grpc__parse_method(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__parse_content_type(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_content_type(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__build_content_type(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_content_type(opts) })
 }
 
 #[no_mangle]
@@ -2183,6 +2226,40 @@ mod tests {
             json!("json")
         );
         assert!(op_parse_content_type(json!({})).is_err());
+    }
+
+    #[test]
+    fn build_content_type_inverts_parse_content_type() {
+        let ct = |opts: Value| {
+            op_build_content_type(opts).unwrap()["content_type"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // No codec → the bare default form; an explicit codec → the `+` form.
+        assert_eq!(ct(json!({})), "application/grpc");
+        assert_eq!(ct(json!({"codec": "json"})), "application/grpc+json");
+        assert_eq!(ct(json!({"codec": "proto"})), "application/grpc+proto");
+        // A truthy `default` forces the bare form even with a proto codec.
+        assert_eq!(
+            ct(json!({"codec": "proto", "default": true})),
+            "application/grpc"
+        );
+        // Round-trips every parse result (carries codec + default).
+        for header in [
+            "application/grpc",
+            "application/grpc+proto",
+            "application/grpc+json",
+            "application/grpc+flatbuffers",
+        ] {
+            let p = op_parse_content_type(json!({ "content_type": header })).unwrap();
+            let rebuilt = ct(json!({ "codec": p["codec"], "default": p["default"] }));
+            assert_eq!(rebuilt, header, "round-trip {header}");
+        }
+        // A codec that isn't a token is rejected.
+        assert!(op_build_content_type(json!({"codec": "a b"})).is_err());
+        assert!(op_build_content_type(json!({"codec": "a/b"})).is_err());
+        assert!(op_build_content_type(json!({"codec": "a+b"})).is_err());
     }
 
     #[test]

@@ -121,6 +121,14 @@ assert_eq Grpc::parse_content_type("application/grpc")->{default}, 1,       "par
 assert_eq Grpc::parse_content_type("application/grpc-web")->{valid}, 0, "parse_content_type: gRPC-Web is a different protocol → invalid"
 assert_eq Grpc::parse_content_type("application/json")->{valid},    0, "parse_content_type: a non-grpc type is invalid"
 
+# build_content_type: inverse of parse_content_type.
+assert_eq Grpc::build_content_type()->{content_type}, "application/grpc", "build_content_type: no codec → bare default form"
+assert_eq Grpc::build_content_type(codec => "json")->{content_type}, "application/grpc+json", "build_content_type: explicit codec → +codec form"
+assert_eq Grpc::build_content_type(codec => "proto", default => 1)->{content_type}, "application/grpc", "build_content_type: default flag forces the bare form"
+val $rtj = Grpc::parse_content_type("application/grpc+json")
+assert_eq Grpc::build_content_type(codec => $rtj->{codec}, default => $rtj->{default})->{content_type}, "application/grpc+json", "build_content_type: round-trips a parsed header"
+assert_dies fn { Grpc::build_content_type(codec => "a b") }, "build_content_type: rejects a non-token codec"
+
 # build_method: inverse of parse_method.
 assert_eq Grpc::build_method(package => "grpc.health.v1", service => "Health", method => "Check")->{path}, "/grpc.health.v1.Health/Check", "build_method: dotted package path"
 assert_eq Grpc::build_method(service => "Health", method => "Check")->{path}, "/Health/Check", "build_method: no package → bare service"
