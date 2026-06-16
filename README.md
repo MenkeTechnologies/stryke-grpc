@@ -187,6 +187,7 @@ Grpc::build_content_type(%opts)  → \%{ content_type, type, codec, default }   
 Grpc::build_method(%opts)        → \%{ path, full_service }   # parts → /pkg.Service/Method; inverse of parse_method
 Grpc::is_binary_key($key)        → 1 | ""              # gRPC "-bin" metadata convention
 Grpc::valid_metadata_key($key)   → \%{ key, valid, reason, binary }   # Custom-Metadata grammar: lowercase/digit/_-., grpc- reserved
+Grpc::normalize_metadata_key($key) → \%{ key, normalized, changed, binary }   # canonical lowercase wire form (keys are case-insensitive)
 Grpc::valid_metadata_value($key, $value) → \%{ key, value, binary, valid, reason }   # value rule by key: -bin → base64 (padded/un-padded), else printable ASCII 0x20-0x7E
 Grpc::encode_bin_value($value)   → $base64             # base64-encode a value's bytes for a -bin key (gRPC wire form)
 Grpc::decode_bin_value($base64)  → $value              # inverse: decode a -bin base64 value back to bytes (padded/un-padded; UTF-8 lossy)
@@ -235,7 +236,7 @@ RPC surface (`grpc__pkg_version`, `grpc__ping`, `grpc__list`,
 `grpc__describe`, `grpc__call`, `grpc__server_stream`,
 `grpc__client_stream`, `grpc__bidi_stream`) and connection-free helpers
 (`grpc__status_code`, `grpc__status_description`, `grpc__status_codes`, `grpc__http_status_for`, `grpc__parse_method`,
-`grpc__build_method`, `grpc__is_binary_key`, `grpc__valid_metadata_key`, `grpc__valid_metadata_value`). The authoritative list is
+`grpc__build_method`, `grpc__is_binary_key`, `grpc__valid_metadata_key`, `grpc__normalize_metadata_key`, `grpc__valid_metadata_value`). The authoritative list is
 `[ffi].exports` in
 `stryke.toml`.
 

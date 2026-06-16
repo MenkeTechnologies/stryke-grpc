@@ -221,6 +221,14 @@ fn Grpc::valid_metadata_key ($key) {
     Grpc::_decode("valid_metadata_key", grpc__valid_metadata_key(to_json({ key => $key })))
 }
 
+## Normalize a gRPC metadata $key to its canonical wire form — ASCII-lowercased,
+## since HTTP/2 header names are lowercase and gRPC keys are case-insensitive
+## (Content-Type and content-type are one key). Returns a hashref
+## { key, normalized, changed, binary }.
+fn Grpc::normalize_metadata_key ($key) {
+    Grpc::_decode("normalize_metadata_key", grpc__normalize_metadata_key(to_json({ key => $key })))
+}
+
 ## Validate a gRPC Custom-Metadata value for a given $key (PROTOCOL-HTTP2): a
 ## -bin key carries RFC 4648 base64 (padded or un-padded accepted), any other
 ## key carries printable ASCII (0x20-0x7E). Companion of valid_metadata_key.

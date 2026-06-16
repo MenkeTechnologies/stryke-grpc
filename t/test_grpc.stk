@@ -144,6 +144,14 @@ assert_eq Grpc::valid_metadata_key("X-Caps")->{valid}, 0,   "valid_metadata_key:
 assert_eq Grpc::valid_metadata_key("grpc-status")->{valid}, 0, "valid_metadata_key: grpc- prefix reserved"
 assert_eq Grpc::valid_metadata_key("has space")->{valid}, 0, "valid_metadata_key: rejects spaces"
 
+# normalize_metadata_key: canonical lowercase wire form (keys are case-insensitive).
+val $nm = Grpc::normalize_metadata_key("Content-Type")
+assert_eq $nm->{normalized}, "content-type", "normalize_metadata_key: lowercases the key"
+assert_eq $nm->{changed},    1,              "normalize_metadata_key: flags the case change"
+assert_eq Grpc::normalize_metadata_key("x-api-key")->{changed}, 0, "normalize_metadata_key: already-canonical is unchanged"
+assert_ok Grpc::normalize_metadata_key("Trace-BIN")->{binary}, "normalize_metadata_key: detects -bin after lowercasing"
+assert_dies fn { Grpc::normalize_metadata_key() }, "normalize_metadata_key: dies without a key"
+
 # valid_metadata_value: ASCII keys take printable ASCII, -bin keys take base64.
 # `\@` escapes the at-sign so stryke does not array-interpolate it.
 assert_ok Grpc::valid_metadata_value("authorization", "Bearer abc123")->{valid}, "valid_metadata_value: printable ASCII passes"

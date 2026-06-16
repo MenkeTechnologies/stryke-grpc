@@ -1202,6 +1202,27 @@ fn op_valid_metadata_key(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Normalize a gRPC metadata key to its canonical wire form — ASCII-lowercased,
+/// since HTTP/2 header names are lowercase and gRPC treats metadata keys
+/// case-insensitively. Use it to compare or de-duplicate keys regardless of the
+/// case a caller supplied (`Content-Type` and `content-type` are the same key).
+/// Only the case changes; validity is `valid_metadata_key`'s job. opts: `key`
+/// (required). Returns `{key, normalized, changed, binary}` where `binary` flags
+/// a `-bin` key. Pure.
+fn op_normalize_metadata_key(opts: Value) -> Result<Value> {
+    let key = opts
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing key"))?;
+    let normalized = key.to_ascii_lowercase();
+    Ok(json!({
+        "key": key,
+        "normalized": normalized,
+        "changed": normalized != key,
+        "binary": normalized.ends_with("-bin"),
+    }))
+}
+
 /// Validate a gRPC Custom-Metadata VALUE against the PROTOCOL-HTTP2 grammar,
 /// which depends on the key: a binary (`-bin`) key carries an RFC 4648 base64
 /// value (the spec requires accepting BOTH padded and un-padded forms); any
@@ -1408,6 +1429,11 @@ pub extern "C" fn grpc__is_binary_key(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__valid_metadata_key(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_valid_metadata_key(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__normalize_metadata_key(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_normalize_metadata_key(opts) })
 }
 
 #[no_mangle]
@@ -2324,6 +2350,29 @@ mod tests {
             );
         }
         assert!(op_valid_metadata_key(json!({})).is_err());
+    }
+
+    #[test]
+    fn normalize_metadata_key_lowercases_to_canonical_form() {
+        let n = |k: &str| op_normalize_metadata_key(json!({ "key": k })).unwrap();
+        // Mixed case → lowercase; `changed` flags that the case was altered.
+        let c = n("Content-Type");
+        assert_eq!(c["normalized"], json!("content-type"));
+        assert_eq!(c["changed"], json!(true));
+        // Already-canonical key is unchanged.
+        let a = n("x-api-key");
+        assert_eq!(a["normalized"], json!("x-api-key"));
+        assert_eq!(a["changed"], json!(false));
+        // The -bin suffix is detected after normalization.
+        let b = n("Trace-BIN");
+        assert_eq!(b["normalized"], json!("trace-bin"));
+        assert_eq!(b["binary"], json!(true));
+        // The normalized form validates (round-trips into valid_metadata_key).
+        assert_eq!(
+            op_valid_metadata_key(json!({ "key": c["normalized"] })).unwrap()["valid"],
+            json!(true)
+        );
+        assert!(op_normalize_metadata_key(json!({})).is_err());
     }
 
     #[test]
