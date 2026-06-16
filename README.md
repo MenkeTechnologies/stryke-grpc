@@ -174,6 +174,8 @@ Pure helpers — string/status utilities that open no connection:
 ```stryke
 Grpc::status_code($name_or_code) → \%{ code, name }   # "NOT_FOUND" ⇄ 5 (codes from tonic)
 Grpc::status_description($name_or_code) → \%{ code, name, description }   # canonical one-line description (verbatim from gRPC Code docs)
+Grpc::encode_status_message($message) → $encoded   # percent-encode for the grpc-message trailer (printable ASCII except % passes; space NOT encoded)
+Grpc::decode_status_message($encoded) → $message   # inverse: %XX → byte, UTF-8 lossy
 Grpc::status_codes()             → @{ {code, name} }   # the full 17-code enum
 Grpc::http_status_for($n_or_c)   → { code, name, http_status }   # gRPC status → HTTP status (grpc-gateway mapping)
 Grpc::grpc_status_for_http($http) → { http_status, code, name }  # HTTP status → gRPC status (spec http-grpc-status-mapping; distinct table)

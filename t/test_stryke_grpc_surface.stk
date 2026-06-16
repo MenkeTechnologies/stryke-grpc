@@ -38,6 +38,8 @@ assert_ok exists &Grpc::encode_bin_value, "Grpc::encode_bin_value exists"
 assert_ok exists &Grpc::decode_bin_value, "Grpc::decode_bin_value exists"
 assert_ok exists &Grpc::status_codes, "Grpc::status_codes exists"
 assert_ok exists &Grpc::status_description, "Grpc::status_description exists"
+assert_ok exists &Grpc::encode_status_message, "Grpc::encode_status_message exists"
+assert_ok exists &Grpc::decode_status_message, "Grpc::decode_status_message exists"
 assert_ok exists &Grpc::http_status_for, "Grpc::http_status_for exists"
 assert_ok exists &Grpc::grpc_status_for_http, "Grpc::grpc_status_for_http exists"
 

@@ -132,6 +132,19 @@ fn Grpc::status_description ($name_or_code) {
     Grpc::_decode("status_description", grpc__status_description(to_json($req)))
 }
 
+## Percent-encode a status $message for the grpc-message trailer (gRPC HTTP/2):
+## printable ASCII except % passes through, everything else → %XX uppercase. Note
+## space is NOT encoded (unlike URL encoding). Returns the encoded string.
+fn Grpc::encode_status_message ($message) {
+    Grpc::_decode("encode_status_message", grpc__encode_status_message(to_json({ message => $message })))->{encoded}
+}
+
+## Decode a percent-encoded grpc-message back to its raw text — inverse of
+## encode_status_message. %XX → byte; UTF-8 lossy. Returns the decoded string.
+fn Grpc::decode_status_message ($encoded) {
+    Grpc::_decode("decode_status_message", grpc__decode_status_message(to_json({ encoded => $encoded })))->{message}
+}
+
 ## The full gRPC status enum as a list of { code, name } (numeric order).
 fn Grpc::status_codes {
     @{ Grpc::_decode("status_codes", grpc__status_codes("{}"))->{codes} }

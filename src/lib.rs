@@ -814,6 +814,62 @@ fn op_status_description(opts: Value) -> Result<Value> {
     Ok(json!({"code": code, "name": name, "description": status_description_for(name)}))
 }
 
+/// Percent-encode a gRPC status message for the `grpc-message` trailer, per the
+/// gRPC HTTP/2 spec: each byte in 0x20-0x24 or 0x26-0x7E (printable ASCII except
+/// `%`) passes through; every other byte — `%` itself and anything outside that
+/// range, including UTF-8 multibyte sequences — becomes `%XX` with uppercase hex.
+/// Note this differs from generic URL encoding, which also encodes space and
+/// reserved characters. opts: `message` (or `value`). Returns `{message,
+/// encoded}`. Pure.
+fn op_encode_status_message(opts: Value) -> Result<Value> {
+    let message = opts
+        .get("message")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing message"))?;
+    let mut out = String::with_capacity(message.len());
+    for &b in message.as_bytes() {
+        if (0x20..=0x24).contains(&b) || (0x26..=0x7e).contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Ok(json!({ "message": message, "encoded": out }))
+}
+
+/// Decode a percent-encoded gRPC status message back to its raw text — the
+/// inverse of `encode_status_message`. `%XX` becomes its byte; a malformed `%`
+/// escape is left literal. The decoded bytes are read as UTF-8 (lossily). opts:
+/// `encoded` (or `message`). Returns `{encoded, message}`. Pure.
+fn op_decode_status_message(opts: Value) -> Result<Value> {
+    let encoded = opts
+        .get("encoded")
+        .or_else(|| opts.get("message"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing encoded"))?;
+    let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Ok(json!({
+        "encoded": encoded,
+        "message": String::from_utf8_lossy(&out).into_owned(),
+    }))
+}
+
 /// Map a gRPC status (by `name` or `code`) to the HTTP status code grpc-gateway
 /// returns for it (`runtime.HTTPStatusFromCode`). Returns
 /// `{code, name, http_status}`. Pure.
@@ -1208,6 +1264,16 @@ pub extern "C" fn grpc__status_code(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__status_description(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_status_description(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__encode_status_message(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_encode_status_message(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__decode_status_message(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_decode_status_message(opts) })
 }
 
 #[no_mangle]
@@ -1813,6 +1879,46 @@ mod tests {
         assert!(op_status_description(json!({"name": "NOPE"})).is_err());
         assert!(op_status_description(json!({"code": 99})).is_err());
         assert!(op_status_description(json!({})).is_err());
+    }
+
+    #[test]
+    fn status_message_percent_codec_follows_grpc_spec() {
+        let enc = |m: &str| {
+            op_encode_status_message(json!({"message": m})).unwrap()["encoded"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // Printable ASCII passes through unchanged — including space (unlike URL
+        // encoding, which would make it %20 or +).
+        assert_eq!(enc("Not Found"), "Not Found");
+        assert_eq!(enc("a!\"#$&~"), "a!\"#$&~");
+        // The percent sign itself is encoded.
+        assert_eq!(enc("50% off"), "50%25 off");
+        // Control bytes and non-ASCII (UTF-8) are percent-encoded, uppercase hex.
+        assert_eq!(enc("a\tb\n"), "a%09b%0A");
+        assert_eq!(enc("é"), "%C3%A9"); // U+00E9 → UTF-8 C3 A9
+                                        // Decode inverts it, including the UTF-8 round-trip.
+        assert_eq!(
+            op_decode_status_message(json!({"encoded": "%C3%A9"})).unwrap()["message"],
+            json!("é")
+        );
+        // Round-trips arbitrary text.
+        for raw in ["Not Found", "50% off", "a\tb\n", "héllo wörld", "plain"] {
+            let e = enc(raw);
+            assert_eq!(
+                op_decode_status_message(json!({ "encoded": e })).unwrap()["message"],
+                json!(raw),
+                "round-trip for {raw:?}"
+            );
+        }
+        // A malformed `%` escape is left literal on decode.
+        assert_eq!(
+            op_decode_status_message(json!({"encoded": "100% done"})).unwrap()["message"],
+            json!("100% done")
+        );
+        assert!(op_encode_status_message(json!({})).is_err());
+        assert!(op_decode_status_message(json!({})).is_err());
     }
 
     #[test]
