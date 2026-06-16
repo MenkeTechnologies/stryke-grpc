@@ -1,6 +1,6 @@
 [package]
 name = "stryke-grpc"
-version = "0.16.0"
+version = "0.17.0"
 description = "Generic gRPC client for stryke. Reflection-based service discovery + JSON-in/JSON-out unary and streaming calls. cdylib loaded in-process — persistent tonic channel + descriptor pool cache across calls."
 authors = ["MenkeTechnologies"]
 license = "MIT"
@@ -27,6 +27,7 @@ exports = [
     "grpc__http_status_for",
     "grpc__grpc_status_for_http",
     "grpc__parse_method",
+    "grpc__parse_target",
     "grpc__parse_content_type",
     "grpc__build_content_type",
     "grpc__parse_timeout",

@@ -1,6 +1,6 @@
 [package]
 name = "stryke-grpc"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 description = "Reflection-based generic gRPC client cdylib for stryke. Dlopened in-process with a persistent tonic channel + descriptor pool cache per endpoint"
 authors = ["MenkeTechnologies"]

@@ -1054,6 +1054,95 @@ fn op_parse_method(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Parse a gRPC channel target URI (the name passed to `grpc::Channel`) into its
+/// resolver parts, per gRPC name resolution (grpc/grpc `doc/naming.md`). The
+/// scheme selects the resolver; if absent or unknown, `dns` is the default. The
+/// understood schemes are `dns` (`dns:[//authority/]host[:port]`), `unix`
+/// (`unix:path` / `unix:///absolute`), `unix-abstract`, `ipv4`
+/// (`ipv4:addr[:port][,…]`) and `ipv6` (`ipv6:[addr]:port[,…]`). For `ipv4`/`ipv6`
+/// the comma-separated `addresses` are parsed to `{address, port}` (port defaults
+/// to 443); a `//authority/` is lifted only for `dns`. opts: `target` (required).
+/// Returns `{target, scheme, default_scheme, authority, endpoint, addresses}`.
+/// Pure.
+fn op_parse_target(opts: Value) -> Result<Value> {
+    let target = opts
+        .get("target")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing target"))?;
+    const KNOWN: &[&str] = &["dns", "unix", "unix-abstract", "ipv4", "ipv6"];
+    // Split scheme from the rest.
+    let (scheme, mut rest, default_scheme) = if let Some((s, r)) = target.split_once(':') {
+        if KNOWN.contains(&s) {
+            (s.to_string(), r.to_string(), false)
+        } else {
+            (String::from("dns"), target.to_string(), true)
+        }
+    } else {
+        (String::from("dns"), target.to_string(), true)
+    };
+    // dns may carry a //authority/ prefix; unix:/// is an absolute-path marker.
+    let mut authority = Value::Null;
+    if scheme == "dns" {
+        if let Some(after) = rest.strip_prefix("//") {
+            match after.split_once('/') {
+                Some((auth, host)) => {
+                    if !auth.is_empty() {
+                        authority = json!(auth);
+                    }
+                    rest = host.to_string();
+                }
+                None => rest = after.to_string(),
+            }
+        }
+    } else if scheme == "unix" {
+        // unix:///absolute → an absolute path; unix://host/path is non-standard,
+        // so only the /// form is normalized.
+        if let Some(abs) = rest.strip_prefix("//") {
+            rest = abs.to_string();
+        }
+    }
+    let endpoint = rest;
+    // Literal-address schemes expose a parsed address list.
+    let addresses = if scheme == "ipv4" || scheme == "ipv6" {
+        let is_v6 = scheme == "ipv6";
+        let mut list = Vec::new();
+        for raw in endpoint.split(',').filter(|s| !s.is_empty()) {
+            let (address, port) = if is_v6 {
+                if let Some(after) = raw.strip_prefix('[') {
+                    match after.split_once(']') {
+                        Some((addr, tail)) => {
+                            let port = tail.strip_prefix(':').and_then(|p| p.parse::<u32>().ok());
+                            (addr.to_string(), port.unwrap_or(443))
+                        }
+                        None => (raw.to_string(), 443),
+                    }
+                } else {
+                    (raw.to_string(), 443)
+                }
+            } else {
+                match raw.rsplit_once(':') {
+                    Some((addr, p)) if p.parse::<u32>().is_ok() => {
+                        (addr.to_string(), p.parse::<u32>().unwrap())
+                    }
+                    _ => (raw.to_string(), 443),
+                }
+            };
+            list.push(json!({"address": address, "port": port}));
+        }
+        json!(list)
+    } else {
+        Value::Null
+    };
+    Ok(json!({
+        "target": target,
+        "scheme": scheme,
+        "default_scheme": default_scheme,
+        "authority": authority,
+        "endpoint": endpoint,
+        "addresses": addresses,
+    }))
+}
+
 /// Parse a gRPC `content-type` header into `{valid, type, codec, default}`. The
 /// gRPC grammar (PROTOCOL-HTTP2) is `application/grpc` optionally followed by
 /// `+proto`, `+json`, or a custom `+{format}`; the bare form defaults to the
@@ -1419,6 +1508,11 @@ pub extern "C" fn grpc__build_content_type(args: *const c_char) -> *const c_char
 #[no_mangle]
 pub extern "C" fn grpc__build_method(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_build_method(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_target(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_target(opts) })
 }
 
 #[no_mangle]
@@ -2208,6 +2302,63 @@ mod tests {
         assert!(op_parse_method(json!({"method": "no-slash"})).is_err());
         assert!(op_parse_method(json!({"method": "/Service/"})).is_err());
         assert!(op_parse_method(json!({})).is_err());
+    }
+
+    #[test]
+    fn parse_target_decomposes_grpc_naming_schemes() {
+        let t = |s: &str| op_parse_target(json!({ "target": s })).unwrap();
+        // No scheme → dns is the default; the whole string is the endpoint.
+        let bare = t("localhost:50051");
+        assert_eq!(bare["scheme"], json!("dns"));
+        assert_eq!(bare["default_scheme"], json!(true));
+        assert_eq!(bare["endpoint"], json!("localhost:50051"));
+        // dns:///host strips the empty authority marker.
+        let d = t("dns:///my.service.com:443");
+        assert_eq!(d["scheme"], json!("dns"));
+        assert_eq!(d["default_scheme"], json!(false));
+        assert_eq!(d["authority"], Value::Null);
+        assert_eq!(d["endpoint"], json!("my.service.com:443"));
+        // dns://authority/host lifts the DNS-server authority.
+        let da = t("dns://8.8.8.8/my.service.com");
+        assert_eq!(da["authority"], json!("8.8.8.8"));
+        assert_eq!(da["endpoint"], json!("my.service.com"));
+        // unix path forms.
+        assert_eq!(t("unix:/tmp/grpc.sock")["scheme"], json!("unix"));
+        assert_eq!(
+            t("unix:/tmp/grpc.sock")["endpoint"],
+            json!("/tmp/grpc.sock")
+        );
+        assert_eq!(
+            t("unix:///tmp/abs.sock")["endpoint"],
+            json!("/tmp/abs.sock")
+        );
+        assert_eq!(
+            t("unix-abstract:my-socket")["scheme"],
+            json!("unix-abstract")
+        );
+        // ipv4: comma-separated addresses with default port 443.
+        let v4 = t("ipv4:1.2.3.4:50051,5.6.7.8");
+        assert_eq!(v4["scheme"], json!("ipv4"));
+        assert_eq!(
+            v4["addresses"][0],
+            json!({"address": "1.2.3.4", "port": 50051})
+        );
+        assert_eq!(
+            v4["addresses"][1],
+            json!({"address": "5.6.7.8", "port": 443})
+        );
+        // ipv6: bracketed address with a port, and a bare one.
+        let v6 = t("ipv6:[2607:f8b0:400e:c00::ef]:8080,[::1]");
+        assert_eq!(
+            v6["addresses"][0],
+            json!({"address": "2607:f8b0:400e:c00::ef", "port": 8080})
+        );
+        assert_eq!(v6["addresses"][1], json!({"address": "::1", "port": 443}));
+        // Unknown scheme falls back to dns with the whole string as endpoint.
+        let unk = t("http://example.com");
+        assert_eq!(unk["scheme"], json!("dns"));
+        assert_eq!(unk["default_scheme"], json!(true));
+        assert!(op_parse_target(json!({})).is_err());
     }
 
     #[test]

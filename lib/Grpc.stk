@@ -171,6 +171,17 @@ fn Grpc::parse_method ($method) {
     Grpc::_decode("parse_method", grpc__parse_method(to_json({ method => $method })))
 }
 
+## Parse a gRPC channel target URI (per gRPC name resolution) into its resolver
+## parts. The scheme selects the resolver; if absent or unknown, dns is the
+## default. Understood schemes: dns (dns:[//authority/]host[:port]), unix
+## (unix:path / unix:///absolute), unix-abstract, ipv4 (ipv4:addr[:port][,…]),
+## ipv6 (ipv6:[addr]:port[,…]). For ipv4/ipv6 the comma-separated addresses are
+## parsed to { address, port } (port defaults to 443). Returns a hashref
+## { target, scheme, default_scheme, authority, endpoint, addresses }.
+fn Grpc::parse_target ($target) {
+    Grpc::_decode("parse_target", grpc__parse_target(to_json({ target => $target })))
+}
+
 ## Parse a gRPC content-type header ("application/grpc" optionally "+proto"/"+json"/
 ## "+<codec>"; bare form defaults to the proto codec) → { content_type, valid, type,
 ## codec, default, reason }. A value that is not application/grpc (e.g.

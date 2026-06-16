@@ -112,6 +112,22 @@ assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
 assert_eq $pm->{service}, "Health",         "parse_method: service"
 assert_eq $pm->{method},  "Check",          "parse_method: method"
 
+# parse_target: decompose a gRPC channel target URI per gRPC name resolution.
+val $tb = Grpc::parse_target("localhost:50051")
+assert_eq $tb->{scheme}, "dns",         "parse_target: no scheme → dns default"
+assert_ok $tb->{default_scheme},        "parse_target: default_scheme flag set"
+assert_eq $tb->{endpoint}, "localhost:50051", "parse_target: bare endpoint"
+val $td = Grpc::parse_target("dns://8.8.8.8/my.service.com")
+assert_eq $td->{authority}, "8.8.8.8",  "parse_target: dns authority lifted"
+assert_eq $td->{endpoint}, "my.service.com", "parse_target: dns endpoint after authority"
+assert_eq Grpc::parse_target("unix:///tmp/abs.sock")->{endpoint}, "/tmp/abs.sock", "parse_target: unix:/// absolute path"
+val $tv4 = Grpc::parse_target("ipv4:1.2.3.4:50051,5.6.7.8")
+assert_eq $tv4->{addresses}[0]{port}, 50051, "parse_target: ipv4 explicit port"
+assert_eq $tv4->{addresses}[1]{port}, 443,   "parse_target: ipv4 default port 443"
+val $tv6 = Grpc::parse_target("ipv6:[2607:f8b0::ef]:8080")
+assert_eq $tv6->{addresses}[0]{address}, "2607:f8b0::ef", "parse_target: ipv6 bracketed address"
+assert_eq $tv6->{addresses}[0]{port}, 8080, "parse_target: ipv6 port"
+
 # parse_content_type: extract the gRPC message codec from the content-type header.
 val $ct = Grpc::parse_content_type("application/grpc+json")
 assert_ok $ct->{valid},        "parse_content_type: application/grpc+json is valid"
