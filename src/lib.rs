@@ -1032,6 +1032,52 @@ fn op_valid_metadata_key(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Validate a gRPC Custom-Metadata VALUE against the PROTOCOL-HTTP2 grammar,
+/// which depends on the key: a binary (`-bin`) key carries an RFC 4648 base64
+/// value (the spec requires accepting BOTH padded and un-padded forms); any
+/// other key carries an `ASCII-Value` — every byte must be space or printable
+/// ASCII (`%x20-%x7E`). Companion of `valid_metadata_key`. opts: `key`, `value`
+/// (both required). Returns `{key, value, binary, valid, reason}`. Pure.
+fn op_valid_metadata_value(opts: Value) -> Result<Value> {
+    let key = opts
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing key"))?;
+    let value = opts
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing value"))?;
+    let binary = key.ends_with("-bin");
+    let reason: Option<String> = if binary {
+        // Re-pad to a multiple of 4 so the shared (padded-only) base64_decode
+        // also accepts the spec-mandated un-padded form, then let it validate
+        // the alphabet/structure.
+        let compact: String = value.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        match compact.len() % 4 {
+            1 => Some("invalid base64 value (length leaves one stray character)".to_string()),
+            r => {
+                let mut padded = compact;
+                padded.extend(std::iter::repeat_n('=', (4 - r) % 4));
+                base64_decode(&padded)
+                    .err()
+                    .map(|_| "value is not valid base64 for a `-bin` key".to_string())
+            }
+        }
+    } else {
+        value
+            .bytes()
+            .find(|&b| !(0x20..=0x7e).contains(&b))
+            .map(|b| format!("byte 0x{b:02x} is outside ASCII-Value range (0x20-0x7E)"))
+    };
+    Ok(json!({
+        "key": key,
+        "value": value,
+        "binary": binary,
+        "valid": reason.is_none(),
+        "reason": reason,
+    }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1124,6 +1170,11 @@ pub extern "C" fn grpc__is_binary_key(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__valid_metadata_key(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_valid_metadata_key(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__valid_metadata_value(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_metadata_value(opts) })
 }
 
 #[cfg(test)]
@@ -1870,5 +1921,39 @@ mod tests {
             );
         }
         assert!(op_valid_metadata_key(json!({})).is_err());
+    }
+
+    #[test]
+    fn valid_metadata_value_follows_ascii_and_binary_rules() {
+        let chk =
+            |k: &str, v: &str| op_valid_metadata_value(json!({ "key": k, "value": v })).unwrap();
+        // ASCII value: space + printable ASCII passes.
+        assert_eq!(chk("authorization", "Bearer abc123")["valid"], json!(true));
+        assert_eq!(chk("x-empty", "")["valid"], json!(true)); // empty is accepted
+        assert_eq!(chk("x-api-key", "key-with.~symbols!")["valid"], json!(true));
+        // Control bytes (tab, newline) are outside 0x20-0x7E → invalid.
+        let nl = chk("x-note", "line1\nline2");
+        assert_eq!(nl["valid"], json!(false));
+        assert!(nl["reason"].as_str().unwrap().contains("0x0a"));
+        assert_eq!(chk("x-tab", "a\tb")["valid"], json!(false));
+        // Binary (-bin) value: RFC 4648 base64, padded AND un-padded both accepted.
+        let bin = chk("trace-bin", "aGk=");
+        assert_eq!(bin["valid"], json!(true));
+        assert_eq!(bin["binary"], json!(true));
+        assert_eq!(chk("trace-bin", "aGk")["valid"], json!(true)); // un-padded
+        assert_eq!(chk("trace-bin", "TWFu")["valid"], json!(true));
+        assert_eq!(chk("trace-bin", "TQ")["valid"], json!(true)); // un-padded "M"
+        assert_eq!(chk("trace-bin", "")["valid"], json!(true)); // empty bytes
+                                                                // Bad base64 for a -bin key: stray char, non-alphabet byte.
+        assert_eq!(chk("trace-bin", "a")["valid"], json!(false)); // len mod 4 == 1
+        assert_eq!(chk("trace-bin", "aG*=")["valid"], json!(false)); // outside alphabet
+                                                                     // The branch is keyed on `-bin`: a space-bearing value is fine as ASCII
+                                                                     // metadata but invalid base64 once the `-bin` suffix selects the binary
+                                                                     // rule (the stray '@' is outside the base64 alphabet).
+        assert_eq!(chk("x-note", "v@l")["valid"], json!(true)); // ASCII: '@' is printable
+        assert_eq!(chk("x-note-bin", "v@l")["valid"], json!(false)); // base64: '@' illegal
+                                                                     // Missing args error rather than panic.
+        assert!(op_valid_metadata_value(json!({ "key": "x" })).is_err());
+        assert!(op_valid_metadata_value(json!({ "value": "x" })).is_err());
     }
 }

@@ -184,3 +184,11 @@ fn Grpc::valid_metadata_key ($key) {
     Grpc::_decode("valid_metadata_key", grpc__valid_metadata_key(to_json({ key => $key })))
 }
 
+## Validate a gRPC Custom-Metadata value for a given $key (PROTOCOL-HTTP2): a
+## -bin key carries RFC 4648 base64 (padded or un-padded accepted), any other
+## key carries printable ASCII (0x20-0x7E). Companion of valid_metadata_key.
+## Returns a hashref { key, value, binary, valid, reason }.
+fn Grpc::valid_metadata_value ($key, $value) {
+    Grpc::_decode("valid_metadata_value", grpc__valid_metadata_value(to_json({ key => $key, value => $value })))
+}
+
