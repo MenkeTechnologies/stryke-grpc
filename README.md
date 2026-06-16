@@ -182,6 +182,7 @@ Grpc::grpc_status_for_http($http) → { http_status, code, name }  # HTTP status
 Grpc::parse_timeout($timeout)    → \%{ value, unit, unit_name, nanos, seconds }   # grpc-timeout header; units H/M/S/m/u/n (case-sensitive)
 Grpc::build_timeout($nanos)      → \%{ timeout, value, unit }   # encode nanos → grpc-timeout header (finest unit ≤ 8 digits, rounds up); inverse of parse_timeout
 Grpc::parse_method($method)      → \%{ full_service, package, service, method }
+Grpc::parse_content_type($ct)    → \%{ content_type, valid, type, codec, default, reason }   # application/grpc[+proto|+json|+codec]; bare → proto; rejects grpc-web
 Grpc::build_method(%opts)        → \%{ path, full_service }   # parts → /pkg.Service/Method; inverse of parse_method
 Grpc::is_binary_key($key)        → 1 | ""              # gRPC "-bin" metadata convention
 Grpc::valid_metadata_key($key)   → \%{ key, valid, reason, binary }   # Custom-Metadata grammar: lowercase/digit/_-., grpc- reserved

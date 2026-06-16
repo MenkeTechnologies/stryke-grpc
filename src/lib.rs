@@ -1054,6 +1054,47 @@ fn op_parse_method(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Parse a gRPC `content-type` header into `{valid, type, codec, default}`. The
+/// gRPC grammar (PROTOCOL-HTTP2) is `application/grpc` optionally followed by
+/// `+proto`, `+json`, or a custom `+{format}`; the bare form defaults to the
+/// `proto` codec. A value that does not start with exactly `application/grpc`
+/// (e.g. `application/grpc-web`, a different protocol) or that has an empty codec
+/// after `+` is invalid. opts: `content_type` (or `value`, required). Returns
+/// `{content_type, valid, type, codec, default, reason}`. Pure.
+fn op_parse_content_type(opts: Value) -> Result<Value> {
+    let ct = opts
+        .get("content_type")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing content_type"))?;
+    let s = ct.trim();
+    const BASE: &str = "application/grpc";
+    let (valid, codec, default, reason): (bool, Value, bool, Option<&str>) = if s == BASE {
+        (true, json!("proto"), true, None)
+    } else if let Some(suffix) = s.strip_prefix(BASE).and_then(|r| r.strip_prefix('+')) {
+        if suffix.is_empty() {
+            (false, Value::Null, false, Some("empty codec after `+`"))
+        } else {
+            (true, json!(suffix), false, None)
+        }
+    } else {
+        (
+            false,
+            Value::Null,
+            false,
+            Some("must be `application/grpc` optionally followed by `+<codec>`"),
+        )
+    };
+    Ok(json!({
+        "content_type": ct,
+        "valid": valid,
+        "type": BASE,
+        "codec": codec,
+        "default": default,
+        "reason": reason,
+    }))
+}
+
 /// Build a gRPC method path from parts — the inverse of `parse_method`. opts:
 /// `service` (required), `method` (required), and an optional `package` that is
 /// dotted onto the service. Emits the leading-slash form `/pkg.Service/Method`
@@ -1304,6 +1345,11 @@ pub extern "C" fn grpc__build_timeout(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__parse_method(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_method(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_content_type(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_content_type(opts) })
 }
 
 #[no_mangle]
@@ -2093,6 +2139,50 @@ mod tests {
         assert!(op_parse_method(json!({"method": "no-slash"})).is_err());
         assert!(op_parse_method(json!({"method": "/Service/"})).is_err());
         assert!(op_parse_method(json!({})).is_err());
+    }
+
+    #[test]
+    fn parse_content_type_extracts_codec_and_rejects_non_grpc() {
+        // Bare form defaults to the proto codec.
+        let bare = op_parse_content_type(json!({"content_type": "application/grpc"})).unwrap();
+        assert_eq!(bare["valid"], json!(true));
+        assert_eq!(bare["codec"], json!("proto"));
+        assert_eq!(bare["default"], json!(true));
+        // Explicit +proto / +json suffixes.
+        let proto =
+            op_parse_content_type(json!({"content_type": "application/grpc+proto"})).unwrap();
+        assert_eq!(proto["codec"], json!("proto"));
+        assert_eq!(proto["default"], json!(false));
+        assert_eq!(
+            op_parse_content_type(json!({"content_type": "application/grpc+json"})).unwrap()
+                ["codec"],
+            json!("json")
+        );
+        // A custom codec is surfaced verbatim.
+        assert_eq!(
+            op_parse_content_type(json!({"content_type": "application/grpc+flatbuffers"})).unwrap()
+                ["codec"],
+            json!("flatbuffers")
+        );
+        // gRPC-Web is a different protocol → invalid.
+        let web = op_parse_content_type(json!({"content_type": "application/grpc-web"})).unwrap();
+        assert_eq!(web["valid"], json!(false));
+        assert_eq!(web["codec"], Value::Null);
+        // Empty codec after `+`, a non-grpc type, and the missing arg.
+        assert_eq!(
+            op_parse_content_type(json!({"content_type": "application/grpc+"})).unwrap()["valid"],
+            json!(false)
+        );
+        assert_eq!(
+            op_parse_content_type(json!({"content_type": "application/json"})).unwrap()["valid"],
+            json!(false)
+        );
+        // `value` alias.
+        assert_eq!(
+            op_parse_content_type(json!({"value": "application/grpc+json"})).unwrap()["codec"],
+            json!("json")
+        );
+        assert!(op_parse_content_type(json!({})).is_err());
     }
 
     #[test]

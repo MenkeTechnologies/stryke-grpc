@@ -112,6 +112,15 @@ assert_eq $pm->{package}, "grpc.health.v1", "parse_method: dotted package"
 assert_eq $pm->{service}, "Health",         "parse_method: service"
 assert_eq $pm->{method},  "Check",          "parse_method: method"
 
+# parse_content_type: extract the gRPC message codec from the content-type header.
+val $ct = Grpc::parse_content_type("application/grpc+json")
+assert_ok $ct->{valid},        "parse_content_type: application/grpc+json is valid"
+assert_eq $ct->{codec}, "json", "parse_content_type: extracts the json codec"
+assert_eq Grpc::parse_content_type("application/grpc")->{codec},   "proto", "parse_content_type: bare form defaults to proto"
+assert_eq Grpc::parse_content_type("application/grpc")->{default}, 1,       "parse_content_type: bare form sets the default flag"
+assert_eq Grpc::parse_content_type("application/grpc-web")->{valid}, 0, "parse_content_type: gRPC-Web is a different protocol → invalid"
+assert_eq Grpc::parse_content_type("application/json")->{valid},    0, "parse_content_type: a non-grpc type is invalid"
+
 # build_method: inverse of parse_method.
 assert_eq Grpc::build_method(package => "grpc.health.v1", service => "Health", method => "Check")->{path}, "/grpc.health.v1.Health/Check", "build_method: dotted package path"
 assert_eq Grpc::build_method(service => "Health", method => "Check")->{path}, "/Health/Check", "build_method: no package → bare service"
