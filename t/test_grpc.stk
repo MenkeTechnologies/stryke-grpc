@@ -127,4 +127,14 @@ assert_ok Grpc::valid_metadata_value("trace-bin", "aGk")->{valid},   "valid_meta
 assert_eq Grpc::valid_metadata_value("trace-bin", "aG*=")->{valid}, 0, "valid_metadata_value: non-base64 char rejected for -bin"
 assert_ok Grpc::valid_metadata_value("x-note-bin", "v\@l")->{binary}, "valid_metadata_value: reports binary flag from -bin key"
 
+# encode_bin_value / decode_bin_value: -bin metadata base64 wire codec.
+assert_eq Grpc::encode_bin_value("hi"),  "aGk=", "encode_bin_value: padded base64"
+assert_eq Grpc::encode_bin_value("Man"), "TWFu", "encode_bin_value: 3 bytes, no padding"
+assert_eq Grpc::decode_bin_value("aGk="), "hi",  "decode_bin_value: inverts encode"
+assert_eq Grpc::decode_bin_value("aGk"),  "hi",  "decode_bin_value: accepts un-padded base64"
+assert_eq Grpc::decode_bin_value(Grpc::encode_bin_value("the quick brown fox")), "the quick brown fox", "decode_bin_value: round-trips encode_bin_value"
+# The encoded form is itself a valid -bin metadata value.
+assert_ok Grpc::valid_metadata_value("trace-bin", Grpc::encode_bin_value("payload"))->{valid}, "encode_bin_value: output passes valid_metadata_value"
+assert_dies fn { Grpc::decode_bin_value("aG*=") }, "decode_bin_value: rejects a non-base64 character"
+
 test_run

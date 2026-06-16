@@ -199,3 +199,16 @@ fn Grpc::valid_metadata_value ($key, $value) {
     Grpc::_decode("valid_metadata_value", grpc__valid_metadata_value(to_json({ key => $key, value => $value })))
 }
 
+## Base64-encode a $value's bytes for a -bin metadata key — the gRPC wire form a
+## -bin header carries. Inverse of decode_bin_value. Returns the base64 string.
+fn Grpc::encode_bin_value ($value) {
+    Grpc::_decode("encode_bin_value", grpc__encode_bin_value(to_json({ value => $value })))->{encoded}
+}
+
+## Decode a base64 -bin metadata value back to its raw bytes (UTF-8 lossy) —
+## inverse of encode_bin_value. Accepts padded or un-padded base64. Returns the
+## decoded string.
+fn Grpc::decode_bin_value ($encoded) {
+    Grpc::_decode("decode_bin_value", grpc__decode_bin_value(to_json({ encoded => $encoded })))->{value}
+}
+

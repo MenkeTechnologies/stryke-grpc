@@ -184,6 +184,8 @@ Grpc::build_method(%opts)        → \%{ path, full_service }   # parts → /pkg
 Grpc::is_binary_key($key)        → 1 | ""              # gRPC "-bin" metadata convention
 Grpc::valid_metadata_key($key)   → \%{ key, valid, reason, binary }   # Custom-Metadata grammar: lowercase/digit/_-., grpc- reserved
 Grpc::valid_metadata_value($key, $value) → \%{ key, value, binary, valid, reason }   # value rule by key: -bin → base64 (padded/un-padded), else printable ASCII 0x20-0x7E
+Grpc::encode_bin_value($value)   → $base64             # base64-encode a value's bytes for a -bin key (gRPC wire form)
+Grpc::decode_bin_value($base64)  → $value              # inverse: decode a -bin base64 value back to bytes (padded/un-padded; UTF-8 lossy)
 ```
 
 `$symbol` for `describe` is one of:

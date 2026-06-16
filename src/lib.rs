@@ -1113,6 +1113,49 @@ fn op_valid_metadata_value(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Encode a binary metadata value for a `-bin` key — gRPC carries the raw bytes
+/// of a `-bin` header base64-encoded on the wire. The input `value`'s UTF-8 bytes
+/// are base64-encoded with the standard padded alphabet, the exact form
+/// `valid_metadata_value` accepts for a `-bin` key. The inverse of
+/// `decode_bin_value`. opts: `value`. Returns `{value, encoded}`. Pure.
+fn op_encode_bin_value(opts: Value) -> Result<Value> {
+    let value = opts
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing value"))?;
+    Ok(json!({ "value": value, "encoded": base64_encode(value.as_bytes()) }))
+}
+
+/// Decode a base64 binary metadata value (a `-bin` key's wire form) back to its
+/// raw bytes, returned as a UTF-8 (lossy) string — the inverse of
+/// `encode_bin_value`. Accepts both the padded form and the spec-permitted
+/// un-padded form (re-padding as needed, like `valid_metadata_value`). opts:
+/// `encoded` (or `value`). Returns `{encoded, value}`. Pure.
+fn op_decode_bin_value(opts: Value) -> Result<Value> {
+    let encoded = opts
+        .get("encoded")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing encoded"))?;
+    let compact: String = encoded
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    let bytes = match compact.len() % 4 {
+        1 => {
+            return Err(anyhow!(
+                "invalid base64 (length leaves one stray character)"
+            ))
+        }
+        r => {
+            let mut padded = compact;
+            padded.extend(std::iter::repeat_n('=', (4 - r) % 4));
+            base64_decode(&padded)?
+        }
+    };
+    Ok(json!({ "encoded": encoded, "value": String::from_utf8_lossy(&bytes).into_owned() }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1215,6 +1258,16 @@ pub extern "C" fn grpc__valid_metadata_key(args: *const c_char) -> *const c_char
 #[no_mangle]
 pub extern "C" fn grpc__valid_metadata_value(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_valid_metadata_value(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__encode_bin_value(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_encode_bin_value(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__decode_bin_value(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_decode_bin_value(opts) })
 }
 
 #[cfg(test)]
@@ -2032,5 +2085,59 @@ mod tests {
                                                                      // Missing args error rather than panic.
         assert!(op_valid_metadata_value(json!({ "key": "x" })).is_err());
         assert!(op_valid_metadata_value(json!({ "value": "x" })).is_err());
+    }
+
+    #[test]
+    fn bin_value_codec_round_trips_and_accepts_unpadded() {
+        // Encode produces the standard padded base64 of the value's bytes.
+        assert_eq!(
+            op_encode_bin_value(json!({"value": "hi"})).unwrap()["encoded"],
+            json!("aGk=")
+        );
+        assert_eq!(
+            op_encode_bin_value(json!({"value": "Man"})).unwrap()["encoded"],
+            json!("TWFu")
+        );
+        assert_eq!(
+            op_encode_bin_value(json!({"value": ""})).unwrap()["encoded"],
+            json!("")
+        );
+        // Decode inverts it.
+        assert_eq!(
+            op_decode_bin_value(json!({"encoded": "aGk="})).unwrap()["value"],
+            json!("hi")
+        );
+        // Un-padded base64 (the form gRPC also permits) decodes the same.
+        assert_eq!(
+            op_decode_bin_value(json!({"encoded": "aGk"})).unwrap()["value"],
+            json!("hi")
+        );
+        // `value` is accepted as an alias for `encoded` on decode.
+        assert_eq!(
+            op_decode_bin_value(json!({"value": "TWFu"})).unwrap()["value"],
+            json!("Man")
+        );
+        // Round-trips arbitrary text, and the encoded form passes valid_metadata_value.
+        for raw in ["", "hi", "Man", "the quick brown fox", "a/b+c=d"] {
+            let enc = op_encode_bin_value(json!({ "value": raw })).unwrap()["encoded"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                op_decode_bin_value(json!({ "encoded": &enc })).unwrap()["value"],
+                json!(raw),
+                "round-trip for {raw:?}"
+            );
+            assert_eq!(
+                op_valid_metadata_value(json!({"key": "x-bin", "value": &enc})).unwrap()["valid"],
+                json!(true),
+                "encoded value is valid for a -bin key: {raw:?}"
+            );
+        }
+        // Errors: a stray-length and a bad-alphabet base64, missing input.
+        assert!(op_decode_bin_value(json!({"encoded": "a"})).is_err());
+        assert!(op_decode_bin_value(json!({"encoded": "aG*="})).is_err());
+        assert!(op_decode_bin_value(json!({})).is_err());
+        assert!(op_encode_bin_value(json!({})).is_err());
     }
 }
