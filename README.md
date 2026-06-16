@@ -173,6 +173,7 @@ Pure helpers — string/status utilities that open no connection:
 
 ```stryke
 Grpc::status_code($name_or_code) → \%{ code, name }   # "NOT_FOUND" ⇄ 5 (codes from tonic)
+Grpc::status_description($name_or_code) → \%{ code, name, description }   # canonical one-line description (verbatim from gRPC Code docs)
 Grpc::status_codes()             → @{ {code, name} }   # the full 17-code enum
 Grpc::http_status_for($n_or_c)   → { code, name, http_status }   # gRPC status → HTTP status (grpc-gateway mapping)
 Grpc::grpc_status_for_http($http) → { http_status, code, name }  # HTTP status → gRPC status (spec http-grpc-status-mapping; distinct table)
@@ -227,7 +228,7 @@ cdylib is dlopened in-process on first `use Grpc` (via stryke's
 RPC surface (`grpc__pkg_version`, `grpc__ping`, `grpc__list`,
 `grpc__describe`, `grpc__call`, `grpc__server_stream`,
 `grpc__client_stream`, `grpc__bidi_stream`) and connection-free helpers
-(`grpc__status_code`, `grpc__status_codes`, `grpc__http_status_for`, `grpc__parse_method`,
+(`grpc__status_code`, `grpc__status_description`, `grpc__status_codes`, `grpc__http_status_for`, `grpc__parse_method`,
 `grpc__build_method`, `grpc__is_binary_key`, `grpc__valid_metadata_key`, `grpc__valid_metadata_value`). The authoritative list is
 `[ffi].exports` in
 `stryke.toml`.

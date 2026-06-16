@@ -779,6 +779,41 @@ fn op_status_code(opts: Value) -> Result<Value> {
     Ok(json!({"code": code, "name": name}))
 }
 
+/// The canonical one-line description of each gRPC status code, verbatim from the
+/// gRPC `Code` documentation (`doc/statuscodes.md`).
+fn status_description_for(name: &str) -> &'static str {
+    match name {
+        "OK" => "Not an error; returned on success.",
+        "CANCELLED" => "The operation was cancelled, typically by the caller.",
+        "UNKNOWN" => "Unknown error. For example, this error may be returned when a Status value received from another address space belongs to an error space that is not known in this address space.",
+        "INVALID_ARGUMENT" => "The client specified an invalid argument. Note that this differs from FAILED_PRECONDITION.",
+        "DEADLINE_EXCEEDED" => "The deadline expired before the operation could complete.",
+        "NOT_FOUND" => "Some requested entity (e.g., file or directory) was not found.",
+        "ALREADY_EXISTS" => "The entity that a client attempted to create (e.g., file or directory) already exists.",
+        "PERMISSION_DENIED" => "The caller does not have permission to execute the specified operation.",
+        "RESOURCE_EXHAUSTED" => "Some resource has been exhausted, perhaps a per-user quota, or perhaps the entire file system is out of space.",
+        "FAILED_PRECONDITION" => "The operation was rejected because the system is not in a state required for the operation's execution.",
+        "ABORTED" => "The operation was aborted, typically due to a concurrency issue such as a sequencer check failure or transaction abort.",
+        "OUT_OF_RANGE" => "The operation was attempted past the valid range. E.g., seeking or reading past end-of-file.",
+        "UNIMPLEMENTED" => "The operation is not implemented or is not supported/enabled in this service.",
+        "INTERNAL" => "Internal errors. This means that some invariants expected by the underlying system have been broken.",
+        "UNAVAILABLE" => "The service is currently unavailable. This is most likely a transient condition, which can be corrected by retrying with a backoff.",
+        "DATA_LOSS" => "Unrecoverable data loss or corruption.",
+        "UNAUTHENTICATED" => "The request does not have valid authentication credentials for the operation.",
+        // resolve_status only ever yields the 17 canonical names above.
+        other => unreachable!("no description for gRPC status `{other}`"),
+    }
+}
+
+/// Resolve a gRPC status by `name` or numeric `code` and return its canonical
+/// one-line description (verbatim from the gRPC `Code` docs) for human-readable
+/// error reporting. opts: `name` or `code`. Returns `{code, name, description}`.
+/// Pure.
+fn op_status_description(opts: Value) -> Result<Value> {
+    let (name, code) = resolve_status(&opts)?;
+    Ok(json!({"code": code, "name": name, "description": status_description_for(name)}))
+}
+
 /// Map a gRPC status (by `name` or `code`) to the HTTP status code grpc-gateway
 /// returns for it (`runtime.HTTPStatusFromCode`). Returns
 /// `{code, name, http_status}`. Pure.
@@ -1125,6 +1160,11 @@ pub extern "C" fn grpc__bidi_stream(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__status_code(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_status_code(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__status_description(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_status_description(opts) })
 }
 
 #[no_mangle]
@@ -1683,6 +1723,43 @@ mod tests {
         assert_eq!(codes[0]["name"], json!("OK"));
         assert_eq!(codes[0]["code"], json!(0));
         assert_eq!(codes[16]["name"], json!("UNAUTHENTICATED"));
+    }
+
+    #[test]
+    fn status_description_resolves_by_name_and_code() {
+        // By name → the verbatim canonical description.
+        let nf = op_status_description(json!({"name": "NOT_FOUND"})).unwrap();
+        assert_eq!(nf["code"], json!(5));
+        assert_eq!(
+            nf["description"],
+            json!("Some requested entity (e.g., file or directory) was not found.")
+        );
+        // By number → the same.
+        assert_eq!(
+            op_status_description(json!({"code": 14})).unwrap()["description"],
+            json!("The service is currently unavailable. This is most likely a transient condition, which can be corrected by retrying with a backoff.")
+        );
+        // Case-insensitive name resolution (inherited from resolve_status).
+        assert_eq!(
+            op_status_description(json!({"name": "ok"})).unwrap()["description"],
+            json!("Not an error; returned on success.")
+        );
+        // Every one of the 17 codes has a non-empty description.
+        for c in op_status_codes(json!({})).unwrap()["codes"]
+            .as_array()
+            .unwrap()
+        {
+            let code = c["code"].as_i64().unwrap();
+            let d = op_status_description(json!({ "code": code })).unwrap();
+            assert!(
+                d["description"].as_str().is_some_and(|s| !s.is_empty()),
+                "code {code} has a description"
+            );
+        }
+        // Unknown name/code and empty input reject.
+        assert!(op_status_description(json!({"name": "NOPE"})).is_err());
+        assert!(op_status_description(json!({"code": 99})).is_err());
+        assert!(op_status_description(json!({})).is_err());
     }
 
     #[test]

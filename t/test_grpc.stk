@@ -53,6 +53,13 @@ assert_eq $nf->{name}, "NOT_FOUND", "status_code: name echoed"
 assert_eq Grpc::status_code(14)->{name}, "UNAVAILABLE", "status_code: numeric → name"
 assert_eq Grpc::status_code("unavailable")->{code}, 14, "status_code: case-insensitive name"
 
+# status_description: canonical one-line descriptions (by name or code).
+val $nfd = Grpc::status_description("NOT_FOUND")
+assert_eq $nfd->{code}, 5, "status_description: NOT_FOUND code"
+assert_match qr/was not found/, $nfd->{description}, "status_description: verbatim text"
+assert_match qr/transient/, Grpc::status_description(14)->{description}, "status_description: by numeric code (UNAVAILABLE)"
+assert_dies fn { Grpc::status_description("NOPE") }, "status_description: rejects an unknown status"
+
 val @codes = Grpc::status_codes()
 assert_eq scalar(@codes), 17, "status_codes: 17 canonical codes"
 assert_eq $codes[0]->{name}, "OK", "status_codes: OK is first"

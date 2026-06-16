@@ -125,6 +125,13 @@ fn Grpc::status_code ($name_or_code) {
     Grpc::_decode("status_code", grpc__status_code(to_json($req)))
 }
 
+## The canonical one-line description of a gRPC status (by name or code), for
+## human-readable error reporting → { code, name, description }.
+fn Grpc::status_description ($name_or_code) {
+    val $req = ($name_or_code =~ /^\d+$/) ? { code => $name_or_code + 0 } : { name => $name_or_code }
+    Grpc::_decode("status_description", grpc__status_description(to_json($req)))
+}
+
 ## The full gRPC status enum as a list of { code, name } (numeric order).
 fn Grpc::status_codes {
     @{ Grpc::_decode("status_codes", grpc__status_codes("{}"))->{codes} }
