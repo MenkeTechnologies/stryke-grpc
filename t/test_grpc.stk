@@ -198,4 +198,16 @@ assert_eq Grpc::decode_bin_value(Grpc::encode_bin_value("the quick brown fox")),
 assert_ok Grpc::valid_metadata_value("trace-bin", Grpc::encode_bin_value("payload"))->{valid}, "encode_bin_value: output passes valid_metadata_value"
 assert_dies fn { Grpc::decode_bin_value("aG*=") }, "decode_bin_value: rejects a non-base64 character"
 
+# encode_metadata_value: key-aware wire encoding (base64 for -bin, ASCII passthrough else).
+val $mb = Grpc::encode_metadata_value("trace-bin", "Man")
+assert_eq $mb->{binary}, 1,        "encode_metadata_value: -bin key is binary"
+assert_eq $mb->{encoded}, "TWFu",  "encode_metadata_value: -bin key base64-encodes"
+val $mt = Grpc::encode_metadata_value("user-agent", "grpc/1.0")
+assert_eq $mt->{binary}, 0,           "encode_metadata_value: text key is not binary"
+assert_eq $mt->{encoded}, "grpc/1.0", "encode_metadata_value: text key passes ASCII through verbatim"
+# a -bin key accepts non-ASCII bytes; a text key rejects them.
+assert_eq Grpc::encode_metadata_value("x-data-bin", "café")->{binary}, 1, "encode_metadata_value: -bin key accepts non-ASCII"
+assert_dies fn { Grpc::encode_metadata_value("x-data", "café") }, "encode_metadata_value: text key rejects a non-ASCII value"
+assert_dies fn { Grpc::encode_metadata_value("x", "a\rb") }, "encode_metadata_value: text key rejects a control char (no CRLF injection)"
+
 test_run

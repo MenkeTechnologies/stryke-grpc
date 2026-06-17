@@ -264,6 +264,16 @@ fn Grpc::encode_bin_value ($value) {
     Grpc::_decode("encode_bin_value", grpc__encode_bin_value(to_json({ value => $value })))->{encoded}
 }
 
+## Encode a metadata $value for the wire, choosing the rule from $key: a -bin key
+## base64-encodes arbitrary bytes (like encode_bin_value), while a text key must
+## hold printable ASCII (0x20-0x7E) and passes through verbatim. A non-ASCII value
+## under a text key dies rather than corrupt the header — the per-key gRPC rule, so
+## callers don't branch on the -bin suffix. Returns a hashref
+## { key, value, encoded, binary }.
+fn Grpc::encode_metadata_value ($key, $value) {
+    Grpc::_decode("encode_metadata_value", grpc__encode_metadata_value(to_json({ key => $key, value => $value })))
+}
+
 ## Decode a base64 -bin metadata value back to its raw bytes (UTF-8 lossy) —
 ## inverse of encode_bin_value. Accepts padded or un-padded base64. Returns the
 ## decoded string.

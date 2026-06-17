@@ -192,6 +192,7 @@ Grpc::valid_metadata_key($key)   → \%{ key, valid, reason, binary }   # Custom
 Grpc::normalize_metadata_key($key) → \%{ key, normalized, changed, binary }   # canonical lowercase wire form (keys are case-insensitive)
 Grpc::valid_metadata_value($key, $value) → \%{ key, value, binary, valid, reason }   # value rule by key: -bin → base64 (padded/un-padded), else printable ASCII 0x20-0x7E
 Grpc::encode_bin_value($value)   → $base64             # base64-encode a value's bytes for a -bin key (gRPC wire form)
+Grpc::encode_metadata_value($key, $value) → { key, value, encoded, binary }   # key-aware wire encoding: -bin key → base64, text key → ASCII passthrough (non-ASCII under a text key dies)
 Grpc::decode_bin_value($base64)  → $value              # inverse: decode a -bin base64 value back to bytes (padded/un-padded; UTF-8 lossy)
 ```
 

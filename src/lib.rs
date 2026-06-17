@@ -1432,6 +1432,41 @@ fn op_encode_bin_value(opts: Value) -> Result<Value> {
     Ok(json!({ "value": value, "encoded": base64_encode(value.as_bytes()) }))
 }
 
+/// Encode a metadata value for the wire, choosing the rule from the `key`: a
+/// `-bin` key carries arbitrary bytes base64-encoded (like `encode_bin_value`),
+/// while any other (text) key must hold printable ASCII (0x20-0x7E) and is passed
+/// through verbatim. A non-ASCII value under a text key is rejected rather than
+/// silently corrupting the header — the gRPC rule a client applies per key when
+/// building metadata, so callers don't branch on the `-bin` suffix themselves.
+/// opts: `key`, `value` (required). Returns `{key, value, encoded, binary}`. Pure.
+fn op_encode_metadata_value(opts: Value) -> Result<Value> {
+    let key = opts
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing key"))?;
+    let value = opts
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing value"))?;
+    let binary = key.ends_with("-bin");
+    let encoded = if binary {
+        base64_encode(value.as_bytes())
+    } else {
+        if let Some(b) = value.bytes().find(|&b| !(0x20..=0x7e).contains(&b)) {
+            return Err(anyhow!(
+                "byte 0x{b:02x} is outside the ASCII-Value range (0x20-0x7E); a non-`-bin` key cannot carry it"
+            ));
+        }
+        value.to_string()
+    };
+    Ok(json!({
+        "key": key,
+        "value": value,
+        "encoded": encoded,
+        "binary": binary,
+    }))
+}
+
 /// Decode a base64 binary metadata value (a `-bin` key's wire form) back to its
 /// raw bytes, returned as a UTF-8 (lossy) string — the inverse of
 /// `encode_bin_value`. Accepts both the padded form and the spec-permitted
@@ -1604,6 +1639,11 @@ pub extern "C" fn grpc__valid_metadata_value(args: *const c_char) -> *const c_ch
 #[no_mangle]
 pub extern "C" fn grpc__encode_bin_value(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_encode_bin_value(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__encode_metadata_value(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_encode_metadata_value(opts) })
 }
 
 #[no_mangle]
@@ -2730,5 +2770,35 @@ mod tests {
         assert!(op_decode_bin_value(json!({"encoded": "aG*="})).is_err());
         assert!(op_decode_bin_value(json!({})).is_err());
         assert!(op_encode_bin_value(json!({})).is_err());
+    }
+
+    #[test]
+    fn encode_metadata_value_picks_the_rule_from_the_key() {
+        // A `-bin` key base64-encodes arbitrary bytes (same as encode_bin_value).
+        let bin = op_encode_metadata_value(json!({"key": "trace-bin", "value": "Man"})).unwrap();
+        assert_eq!(bin["binary"], json!(true));
+        assert_eq!(bin["encoded"], json!("TWFu"));
+        assert_eq!(
+            bin["encoded"],
+            op_encode_bin_value(json!({"value": "Man"})).unwrap()["encoded"]
+        );
+        // A text key passes printable ASCII through verbatim.
+        let txt =
+            op_encode_metadata_value(json!({"key": "user-agent", "value": "grpc/1.0"})).unwrap();
+        assert_eq!(txt["binary"], json!(false));
+        assert_eq!(txt["encoded"], json!("grpc/1.0"));
+        // A non-`-bin` key rejects a value with a non-ASCII byte rather than
+        // corrupt the header; the same value is fine under a `-bin` key.
+        assert!(op_encode_metadata_value(json!({"key": "x-data", "value": "café"})).is_err());
+        assert_eq!(
+            op_encode_metadata_value(json!({"key": "x-data-bin", "value": "café"})).unwrap()
+                ["binary"],
+            json!(true)
+        );
+        // A control character (CR) under a text key is rejected (no CRLF injection).
+        assert!(op_encode_metadata_value(json!({"key": "x", "value": "a\rb"})).is_err());
+        // Missing key/value error.
+        assert!(op_encode_metadata_value(json!({"value": "x"})).is_err());
+        assert!(op_encode_metadata_value(json!({"key": "x"})).is_err());
     }
 }
