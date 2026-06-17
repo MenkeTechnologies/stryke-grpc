@@ -183,6 +183,7 @@ Grpc::parse_timeout($timeout)    → \%{ value, unit, unit_name, nanos, seconds 
 Grpc::build_timeout($nanos)      → \%{ timeout, value, unit }   # encode nanos → grpc-timeout header (finest unit ≤ 8 digits, rounds up); inverse of parse_timeout
 Grpc::parse_method($method)      → \%{ full_service, package, service, method }
 Grpc::parse_target($target)      → \%{ target, scheme, default_scheme, authority, endpoint, addresses }   # gRPC channel target URI (dns/unix/unix-abstract/ipv4/ipv6); no scheme → dns; ipv4/ipv6 addresses parsed (port default 443)
+Grpc::build_target(%opts)        → \%{ target, scheme }   # inverse of parse_target; opts scheme/endpoint/authority/addresses → dns:[//authority/]host, unix:path / unix:///absolute, unix-abstract:path, ipv4:addr:port,…, ipv6:[addr]:port,…
 Grpc::parse_content_type($ct)    → \%{ content_type, valid, type, codec, default, reason }   # application/grpc[+proto|+json|+codec]; bare → proto; rejects grpc-web
 Grpc::build_content_type(%opts)  → \%{ content_type, type, codec, default }   # inverse: {codec,default} → application/grpc[+codec] (round-trips parse_content_type)
 Grpc::build_method(%opts)        → \%{ path, full_service }   # parts → /pkg.Service/Method; inverse of parse_method
@@ -237,7 +238,7 @@ RPC surface (`grpc__pkg_version`, `grpc__ping`, `grpc__list`,
 `grpc__describe`, `grpc__call`, `grpc__server_stream`,
 `grpc__client_stream`, `grpc__bidi_stream`) and connection-free helpers
 (`grpc__status_code`, `grpc__status_description`, `grpc__status_codes`, `grpc__http_status_for`, `grpc__parse_method`, `grpc__parse_target`,
-`grpc__build_method`, `grpc__is_binary_key`, `grpc__valid_metadata_key`, `grpc__normalize_metadata_key`, `grpc__valid_metadata_value`). The authoritative list is
+`grpc__build_target`, `grpc__build_method`, `grpc__is_binary_key`, `grpc__valid_metadata_key`, `grpc__normalize_metadata_key`, `grpc__valid_metadata_value`). The authoritative list is
 `[ffi].exports` in
 `stryke.toml`.
 

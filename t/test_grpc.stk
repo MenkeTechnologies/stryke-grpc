@@ -128,6 +128,17 @@ val $tv6 = Grpc::parse_target("ipv6:[2607:f8b0::ef]:8080")
 assert_eq $tv6->{addresses}[0]{address}, "2607:f8b0::ef", "parse_target: ipv6 bracketed address"
 assert_eq $tv6->{addresses}[0]{port}, 8080, "parse_target: ipv6 port"
 
+# build_target: the inverse of parse_target — construct a canonical target string.
+assert_eq Grpc::build_target(endpoint => "localhost:50051")->{target}, "dns:localhost:50051", "build_target: dns bare endpoint"
+assert_eq Grpc::build_target(scheme => "dns", authority => "8.8.8.8", endpoint => "my.service.com")->{target}, "dns://8.8.8.8/my.service.com", "build_target: dns authority"
+assert_eq Grpc::build_target(scheme => "unix", endpoint => "/tmp/abs.sock")->{target}, "unix:///tmp/abs.sock", "build_target: unix absolute path"
+assert_eq Grpc::build_target(scheme => "unix-abstract", endpoint => "my-socket")->{target}, "unix-abstract:my-socket", "build_target: unix-abstract"
+assert_eq Grpc::build_target(scheme => "ipv6", addresses => [+{ address => "::1", port => 443 }])->{target}, "ipv6:[::1]:443", "build_target: ipv6 bracketed with port"
+# round-trip through parse_target
+val $rt = Grpc::parse_target(Grpc::build_target(scheme => "ipv4", addresses => [+{ address => "1.2.3.4", port => 50051 }])->{target})
+assert_eq $rt->{addresses}[0]{port}, 50051, "build_target: round-trips through parse_target"
+assert_dies fn { Grpc::build_target(scheme => "dns") }, "build_target: missing endpoint dies"
+
 # parse_content_type: extract the gRPC message codec from the content-type header.
 val $ct = Grpc::parse_content_type("application/grpc+json")
 assert_ok $ct->{valid},        "parse_content_type: application/grpc+json is valid"

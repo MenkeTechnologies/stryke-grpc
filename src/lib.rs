@@ -1143,6 +1143,67 @@ fn op_parse_target(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Build a canonical gRPC name-resolution target string — the inverse of
+/// parse_target. Produces the forms documented in gRPC naming.md:
+/// `dns:[//authority/]host[:port]`, `unix:path` / `unix:///absolute`,
+/// `unix-abstract:path`, `ipv4:addr:port,…`, `ipv6:[addr]:port,…` (IPv6 literals
+/// are bracketed when a port is present). opts: `scheme` (default `dns`; one of
+/// dns/unix/unix-abstract/ipv4/ipv6), `endpoint` (host[:port] or path), `authority`
+/// (dns only, optional), `addresses` (ipv4/ipv6 only — array of `{address, port}`,
+/// used in place of `endpoint` when present). Round-trips through parse_target.
+/// Pure.
+fn op_build_target(opts: Value) -> Result<Value> {
+    let scheme = opts.get("scheme").and_then(Value::as_str).unwrap_or("dns");
+    let endpoint = || -> Result<String> {
+        opts.get("endpoint")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("missing endpoint"))
+    };
+    let target = match scheme {
+        "dns" => match opts.get("authority").and_then(Value::as_str) {
+            Some(auth) => format!("dns://{auth}/{}", endpoint()?),
+            None => format!("dns:{}", endpoint()?),
+        },
+        "unix" => {
+            let path = endpoint()?;
+            if path.starts_with('/') {
+                format!("unix://{path}")
+            } else {
+                format!("unix:{path}")
+            }
+        }
+        "unix-abstract" => format!("unix-abstract:{}", endpoint()?),
+        "ipv4" | "ipv6" => {
+            let v6 = scheme == "ipv6";
+            let body = if let Some(arr) = opts.get("addresses").and_then(Value::as_array) {
+                if arr.is_empty() {
+                    return Err(anyhow!("addresses must be a non-empty array"));
+                }
+                let mut parts = Vec::with_capacity(arr.len());
+                for a in arr {
+                    let addr = a
+                        .get("address")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow!("each address entry needs a string `address`"))?;
+                    let port = a.get("port").and_then(Value::as_u64);
+                    parts.push(match (v6, port) {
+                        (true, Some(p)) => format!("[{addr}]:{p}"),
+                        (false, Some(p)) => format!("{addr}:{p}"),
+                        (_, None) => addr.to_string(),
+                    });
+                }
+                parts.join(",")
+            } else {
+                endpoint()?
+            };
+            format!("{scheme}:{body}")
+        }
+        other => return Err(anyhow!("unknown scheme `{other}`")),
+    };
+    Ok(json!({ "target": target, "scheme": scheme }))
+}
+
 /// Parse a gRPC `content-type` header into `{valid, type, codec, default}`. The
 /// gRPC grammar (PROTOCOL-HTTP2) is `application/grpc` optionally followed by
 /// `+proto`, `+json`, or a custom `+{format}`; the bare form defaults to the
@@ -1513,6 +1574,11 @@ pub extern "C" fn grpc__build_method(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__parse_target(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_target(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__build_target(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_target(opts) })
 }
 
 #[no_mangle]
@@ -2359,6 +2425,58 @@ mod tests {
         assert_eq!(unk["scheme"], json!("dns"));
         assert_eq!(unk["default_scheme"], json!(true));
         assert!(op_parse_target(json!({})).is_err());
+    }
+
+    #[test]
+    fn build_target_inverts_parse_target() {
+        let b = |o: Value| {
+            op_build_target(o).unwrap()["target"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // dns: no authority → bare scheme:endpoint; authority → //authority/.
+        assert_eq!(
+            b(json!({"endpoint": "localhost:50051"})),
+            "dns:localhost:50051"
+        );
+        assert_eq!(
+            b(json!({"scheme": "dns", "authority": "8.8.8.8", "endpoint": "my.service.com"})),
+            "dns://8.8.8.8/my.service.com"
+        );
+        // unix: absolute path gets the /// form, relative stays single-colon.
+        assert_eq!(
+            b(json!({"scheme": "unix", "endpoint": "/tmp/abs.sock"})),
+            "unix:///tmp/abs.sock"
+        );
+        assert_eq!(
+            b(json!({"scheme": "unix", "endpoint": "rel.sock"})),
+            "unix:rel.sock"
+        );
+        assert_eq!(
+            b(json!({"scheme": "unix-abstract", "endpoint": "my-socket"})),
+            "unix-abstract:my-socket"
+        );
+        // ipv4/ipv6 from a structured address list; v6 literals are bracketed.
+        assert_eq!(
+            b(json!({"scheme": "ipv4", "addresses": [
+                {"address": "1.2.3.4", "port": 50051}, {"address": "5.6.7.8", "port": 443}]})),
+            "ipv4:1.2.3.4:50051,5.6.7.8:443"
+        );
+        assert_eq!(
+            b(json!({"scheme": "ipv6", "addresses": [
+                {"address": "2607:f8b0:400e:c00::ef", "port": 8080}, {"address": "::1"}]})),
+            "ipv6:[2607:f8b0:400e:c00::ef]:8080,::1"
+        );
+        // Round-trip: parse(build(x)) recovers the components.
+        let built = op_build_target(json!({"scheme": "dns", "endpoint": "svc:443"})).unwrap();
+        let parsed = op_parse_target(json!({"target": built["target"]})).unwrap();
+        assert_eq!(parsed["scheme"], json!("dns"));
+        assert_eq!(parsed["endpoint"], json!("svc:443"));
+        // Bad inputs error.
+        assert!(op_build_target(json!({"scheme": "dns"})).is_err());
+        assert!(op_build_target(json!({"scheme": "bogus", "endpoint": "x"})).is_err());
+        assert!(op_build_target(json!({"scheme": "ipv4", "addresses": []})).is_err());
     }
 
     #[test]

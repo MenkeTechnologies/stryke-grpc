@@ -182,6 +182,16 @@ fn Grpc::parse_target ($target) {
     Grpc::_decode("parse_target", grpc__parse_target(to_json({ target => $target })))
 }
 
+## Build a canonical gRPC target string — the inverse of parse_target. opts:
+## scheme (default dns), endpoint (host[:port] or path), authority (dns only),
+## addresses (ipv4/ipv6 only — array of { address, port }, used in place of
+## endpoint when present). Produces dns:[//authority/]host, unix:path /
+## unix:///absolute, unix-abstract:path, ipv4:addr:port,…, ipv6:[addr]:port,….
+## Returns a hashref { target, scheme }.
+fn Grpc::build_target (%opts) {
+    Grpc::_decode("build_target", grpc__build_target(to_json(\%opts)))
+}
+
 ## Parse a gRPC content-type header ("application/grpc" optionally "+proto"/"+json"/
 ## "+<codec>"; bare form defaults to the proto codec) → { content_type, valid, type,
 ## codec, default, reason }. A value that is not application/grpc (e.g.
