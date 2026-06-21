@@ -34,7 +34,7 @@ package, NDJSON-friendly, and statically linked. Opt-in package tier.
 - [\[0x04\] API reference](#0x04-api-reference)
 - [\[0x05\] FFI layer](#0x05-ffi-layer)
 - [\[0x06\] How reflection works](#0x06-how-reflection-works)
-- [\[0x07\] Scope (v1)](#0x07-scope-v1)
+- [\[0x07\] Scope](#0x07-scope)
 - [\[0x08\] Tests](#0x08-tests)
 - [\[0x09\] Local test server](#0x09-local-test-server)
 - [\[0x0A\] Dev workflow](#0x0a-dev-workflow)
