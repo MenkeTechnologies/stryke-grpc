@@ -268,4 +268,51 @@ assert_eq Grpc::health_status("serving")->{status}, 1, "health_status: case-inse
 assert_eq Grpc::health_status(3)->{name}, "SERVICE_UNKNOWN", "health_status: 3 → SERVICE_UNKNOWN"
 assert_dies fn { Grpc::health_status("DEGRADED") }, "health_status: rejects unknown status"
 
+# build_authority: inverse of parse_authority (host[:port], bracketed IPv6).
+assert_eq Grpc::build_authority(host => "api.example.com", port => 443)->{authority}, "api.example.com:443", "build_authority: host:port"
+assert_eq Grpc::build_authority(host => "localhost")->{authority}, "localhost", "build_authority: bare host (no port)"
+assert_eq Grpc::build_authority(host => "::1", port => 443)->{authority}, "[::1]:443", "build_authority: IPv6 literal gets bracketed"
+assert_eq Grpc::build_authority(host => "[::1]", port => 8080)->{authority}, "[::1]:8080", "build_authority: already-bracketed host is not double-wrapped"
+# round-trips through parse_authority
+val $ba = Grpc::parse_authority(Grpc::build_authority(host => "2607:f8b0::ef", port => 9090)->{authority})
+assert_eq $ba->{host}, "2607:f8b0::ef", "build_authority: round-trips host through parse_authority"
+assert_eq $ba->{port}, 9090,            "build_authority: round-trips port through parse_authority"
+assert_dies fn { Grpc::build_authority() }, "build_authority: requires host"
+
+# is_pseudo_header: HTTP/2 pseudo-header classifier.
+assert_ok Grpc::is_pseudo_header(":authority")->{pseudo}, "is_pseudo_header: :authority is a pseudo-header"
+assert_ok Grpc::is_pseudo_header(":authority")->{known},  "is_pseudo_header: :authority is a known pseudo-header"
+assert_eq Grpc::is_pseudo_header(":custom")->{known}, 0, "is_pseudo_header: an unknown : name is pseudo but not known"
+assert_ok Grpc::is_pseudo_header(":custom")->{pseudo},   "is_pseudo_header: any leading colon is pseudo"
+assert_eq Grpc::is_pseudo_header("content-type")->{pseudo}, 0, "is_pseudo_header: a normal header is not pseudo"
+
+# retriable_status: gRPC retry design A6 retryable set.
+assert_ok Grpc::retriable_status("UNAVAILABLE")->{retriable}, "retriable_status: UNAVAILABLE is retriable"
+assert_ok Grpc::retriable_status("UNAVAILABLE")->{transient}, "retriable_status: UNAVAILABLE is transient"
+assert_ok Grpc::retriable_status(14)->{retriable},           "retriable_status: by numeric code (14 = UNAVAILABLE)"
+assert_ok Grpc::retriable_status("ABORTED")->{retriable},    "retriable_status: ABORTED is retriable"
+assert_eq Grpc::retriable_status("ABORTED")->{transient}, 0, "retriable_status: ABORTED is not the transient one"
+assert_eq Grpc::retriable_status("INVALID_ARGUMENT")->{retriable}, 0, "retriable_status: INVALID_ARGUMENT is not retriable"
+assert_eq Grpc::retriable_status("OK")->{retriable}, 0,      "retriable_status: OK is not retriable"
+assert_dies fn { Grpc::retriable_status("NOPE") }, "retriable_status: rejects an unknown status"
+
+# frame_message / unframe_message: gRPC Length-Prefixed-Message wire framing.
+val $msgb64 = Grpc::encode_bin_value("hello grpc")
+val $fr = Grpc::frame_message($msgb64)
+assert_eq $fr->{length}, 10,    "frame_message: length is the message byte count"
+assert_eq $fr->{compressed}, 0, "frame_message: uncompressed flag by default"
+val $uf = Grpc::unframe_message($fr->{frame})
+assert_eq $uf->{length}, 10,           "unframe_message: recovers the length"
+assert_eq $uf->{compressed}, 0,        "unframe_message: recovers the flag"
+assert_eq $uf->{payload}, $msgb64,     "unframe_message: recovers the exact payload bytes"
+assert_eq Grpc::decode_bin_value($uf->{payload}), "hello grpc", "frame/unframe: round-trips the original message"
+# compressed flag survives the round-trip
+assert_eq Grpc::frame_message($msgb64, compressed => 1)->{compressed}, 1, "frame_message: compressed flag set"
+assert_ok Grpc::unframe_message(Grpc::frame_message($msgb64, compressed => 1)->{frame})->{compressed}, "unframe_message: compressed flag survives the round-trip"
+# an empty message frames to a 5-byte header with a zero length
+val $efr = Grpc::frame_message(Grpc::encode_bin_value(""))
+assert_eq $efr->{length}, 0, "frame_message: empty message has length 0"
+assert_eq Grpc::unframe_message($efr->{frame})->{length}, 0, "unframe_message: empty message round-trips"
+assert_dies fn { Grpc::unframe_message(Grpc::encode_bin_value("ab")) }, "unframe_message: rejects a frame shorter than the 5-byte header"
+
 test_run

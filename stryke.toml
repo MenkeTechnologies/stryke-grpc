@@ -52,6 +52,11 @@ exports = [
     "grpc__parse_accept_encoding",
     "grpc__build_accept_encoding",
     "grpc__health_status",
+    "grpc__build_authority",
+    "grpc__is_pseudo_header",
+    "grpc__retriable_status",
+    "grpc__frame_message",
+    "grpc__unframe_message",
 ]
 
 [scripts]

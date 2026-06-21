@@ -59,5 +59,10 @@ assert_ok exists &Grpc::valid_compression, "Grpc::valid_compression exists"
 assert_ok exists &Grpc::parse_accept_encoding, "Grpc::parse_accept_encoding exists"
 assert_ok exists &Grpc::build_accept_encoding, "Grpc::build_accept_encoding exists"
 assert_ok exists &Grpc::health_status, "Grpc::health_status exists"
+assert_ok exists &Grpc::build_authority, "Grpc::build_authority exists"
+assert_ok exists &Grpc::is_pseudo_header, "Grpc::is_pseudo_header exists"
+assert_ok exists &Grpc::retriable_status, "Grpc::retriable_status exists"
+assert_ok exists &Grpc::frame_message, "Grpc::frame_message exists"
+assert_ok exists &Grpc::unframe_message, "Grpc::unframe_message exists"
 
 test_run

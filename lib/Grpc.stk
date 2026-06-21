@@ -359,3 +359,51 @@ fn Grpc::health_status ($name_or_code) {
     Grpc::_decode("health_status", grpc__health_status(to_json($req)))
 }
 
+## Build an HTTP/2 :authority value from parts — inverse of parse_authority. A
+## bare $host passes through; with $port → host:port, and an IPv6-literal host
+## (contains ':', not already bracketed) is wrapped in [..] so the host/port
+## colon stays unambiguous. opts: host (required), port (optional). Returns a
+## hashref { authority, host, port }.
+fn Grpc::build_authority (%opts) {
+    Grpc::_decode("build_authority", grpc__build_authority(to_json(\%opts)))
+}
+
+## Whether a metadata $key is an HTTP/2 pseudo-header (a name beginning with ":"
+## — :method, :scheme, :path, :authority, :status). Pseudo-headers are transport-
+## generated and must never be set as application metadata; the standalone
+## classifier is_reserved_key folds in. Returns { key, pseudo, known } (known is
+## true only for the five HTTP/2-defined names).
+fn Grpc::is_pseudo_header ($key) {
+    Grpc::_decode("is_pseudo_header", grpc__is_pseudo_header(to_json({ key => $key })))
+}
+
+## Whether a gRPC status (by name or numeric code) is in the retryable set a
+## client may replay for an idempotent method (gRPC retry design A6). transient
+## flags UNAVAILABLE specifically — the one code retryable for any method.
+## Returns a hashref { code, name, retriable, transient }.
+fn Grpc::retriable_status ($name_or_code) {
+    val $req = ($name_or_code =~ /^\d+$/) ? { code => $name_or_code + 0 } : { name => $name_or_code }
+    Grpc::_decode("retriable_status", grpc__retriable_status(to_json($req)))
+}
+
+## Frame a gRPC message into the Length-Prefixed-Message wire form (1-byte
+## Compressed-Flag + 4-byte big-endian length + bytes). $payload is the message's
+## bytes base64-encoded (the -bin wire form encode_bin_value produces); the framed
+## result is base64 too. opts: compressed (bool — sets the flag byte). Inverse of
+## unframe_message. Returns a hashref { frame, length, compressed }.
+fn Grpc::frame_message ($payload, %opts) {
+    # stryke's to_json cannot emit a JSON boolean (\1 → "SCALAR(..)"), so the
+    # compressed flag is sent as a 1/0 integer the cdylib reads truthily.
+    var %r = (payload => $payload)
+    $r{compressed} = ($opts{compressed} ? 1 : 0) if exists $opts{compressed}
+    Grpc::_decode("frame_message", grpc__frame_message(to_json(\%r)))
+}
+
+## Parse a gRPC Length-Prefixed-Message frame back into its parts — inverse of
+## frame_message. The base64 $frame is decoded to flag + length + message; the
+## embedded length is validated against the actual payload, which is returned
+## base64-encoded. Returns a hashref { compressed, length, payload }.
+fn Grpc::unframe_message ($frame) {
+    Grpc::_decode("unframe_message", grpc__unframe_message(to_json({ frame => $frame })))
+}
+

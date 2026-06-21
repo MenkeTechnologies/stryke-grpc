@@ -205,6 +205,11 @@ Grpc::valid_compression($enc)    → \%{ encoding, valid, identity, supported } 
 Grpc::parse_accept_encoding($h)  → \%{ header, encodings, unknown, valid }   # comma-separated grpc-accept-encoding → tokens (order kept, unknowns flagged)
 Grpc::build_accept_encoding(\@codecs) → \%{ header, codecs }   # inverse: validate + lowercase + de-dup codecs → grpc-accept-encoding header
 Grpc::health_status($n_or_c)     → \%{ status, name }   # grpc.health.v1.Health ServingStatus (UNKNOWN=0/SERVING=1/NOT_SERVING=2/SERVICE_UNKNOWN=3)
+Grpc::build_authority(%opts)     → \%{ authority, host, port }   # inverse of parse_authority: host[+port] → host:port (IPv6 literal bracketed)
+Grpc::is_pseudo_header($key)     → \%{ key, pseudo, known }   # HTTP/2 pseudo-header (leading ":"); known = one of :method/:scheme/:path/:authority/:status
+Grpc::retriable_status($n_or_c)  → \%{ code, name, retriable, transient }   # gRPC retry design A6 retryable set; transient flags UNAVAILABLE
+Grpc::frame_message($payload, %opts) → \%{ frame, length, compressed }   # gRPC Length-Prefixed-Message framing: 1-byte flag + 4-byte BE length + bytes (base64 in/out); opts compressed
+Grpc::unframe_message($frame)    → \%{ compressed, length, payload }   # inverse: parse a base64 LPM frame; validates the length prefix
 ```
 
 `$symbol` for `describe` is one of:
