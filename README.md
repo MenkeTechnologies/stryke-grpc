@@ -89,7 +89,7 @@ back-to-back calls reuse the same multiplexed HTTP/2 connection.
 use Grpc
 
 # List the services on a reflection-enabled server.
-my @services = Grpc::list target => "localhost:50051", plaintext => 1
+val @services = Grpc::list target => "localhost:50051", plaintext => 1
 p "$_->{service}" for @services
 
 # Describe a service (methods + signatures).
@@ -101,10 +101,10 @@ p to_json Grpc::describe "helloworld.Greeter/SayHello",
                          target => "localhost:50051", plaintext => 1
 
 # Unary call — pass any stryke value that maps to the input message.
-my $reply = Grpc::call "helloworld.Greeter/SayHello",
+val $reply = Grpc::call "helloworld.Greeter/SayHello",
                        { name => "stryke" },
                        target => "localhost:50051", plaintext => 1
-p "response: " . to_json($reply)
+p "response: #{to_json $reply}"
 
 # Auth headers / metadata.
 Grpc::call "myapi.v1.Service/Auth",
