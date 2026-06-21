@@ -271,3 +271,91 @@ fn Grpc::decode_bin_value ($encoded) {
     Grpc::_decode("decode_bin_value", grpc__decode_bin_value(to_json({ encoded => $encoded })))->{value}
 }
 
+## Parse a grpc-status trailer (the numeric status code on the wire) into
+## { code, name, valid }. An out-of-range code returns { valid => 0, name => undef }
+## rather than dying, so a caller still sees a junk code a server sent.
+fn Grpc::parse_grpc_status ($code) {
+    Grpc::_decode("parse_grpc_status", grpc__parse_grpc_status(to_json({ code => $code + 0 })))
+}
+
+## Build the gRPC trailer pair { code, name, grpc_status, grpc_message } from a
+## status (name or numeric code) and an optional $message. grpc_status is the
+## string code for the header; grpc_message is the percent-encoded message (undef
+## when no message is given).
+fn Grpc::build_grpc_trailer ($name_or_code, $message = undef) {
+    val $req = ($name_or_code =~ /^\d+$/) ? { code => $name_or_code + 0 } : { name => $name_or_code }
+    $req->{message} = $message if defined $message
+    Grpc::_decode("build_grpc_trailer", grpc__build_grpc_trailer(to_json($req)))
+}
+
+## Parse an HTTP/2 :authority value (host[:port]) into { authority, host, port }.
+## IPv6 literals must be bracketed ([::1]:443); brackets are stripped from host.
+## A missing port yields port => undef.
+fn Grpc::parse_authority ($authority) {
+    Grpc::_decode("parse_authority", grpc__parse_authority(to_json({ authority => $authority })))
+}
+
+## Parse a gRPC user-agent header into { user_agent, grpc_impl, grpc_version,
+## custom }. Lifts the first `grpc-<impl>/<version>` token; everything before it
+## is `custom` (undef when absent). No grpc- token → grpc_impl undef, whole value
+## as custom.
+fn Grpc::parse_user_agent ($user_agent) {
+    Grpc::_decode("parse_user_agent", grpc__parse_user_agent(to_json({ user_agent => $user_agent })))
+}
+
+## Build a gRPC user-agent header — inverse of parse_user_agent. opts: impl
+## (required), version (optional), custom (optional product token prefix). Returns
+## { user_agent, grpc_impl, grpc_version }.
+fn Grpc::build_user_agent (%opts) {
+    Grpc::_decode("build_user_agent", grpc__build_user_agent(to_json(\%opts)))
+}
+
+## True/false whether a metadata $key is reserved by gRPC (HTTP/2 pseudo-headers,
+## content-type/te/user-agent, and any `grpc-` prefix). Returns
+## { key, reserved, reason }.
+fn Grpc::is_reserved_key ($key) {
+    Grpc::_decode("is_reserved_key", grpc__is_reserved_key(to_json({ key => $key })))
+}
+
+## Split a fully-qualified method — path form `/pkg.Service/Method` OR dotted form
+## `pkg.Service.Method` — into { full_service, service, package, method }. The
+## permissive sibling of parse_method (which requires the slash path form).
+fn Grpc::split_full_method ($method) {
+    Grpc::_decode("split_full_method", grpc__split_full_method(to_json({ method => $method })))
+}
+
+## The compression tokens this client supports for grpc-encoding /
+## grpc-accept-encoding: identity, gzip, deflate, zstd. Returns the list.
+fn Grpc::compression_codecs {
+    @{ Grpc::_decode("compression_codecs", grpc__compression_codecs("{}"))->{codecs} }
+}
+
+## Validate a single grpc-encoding token against the supported set. identity is
+## always valid. Returns { encoding, valid, identity, supported }.
+fn Grpc::valid_compression ($encoding) {
+    Grpc::_decode("valid_compression", grpc__valid_compression(to_json({ encoding => $encoding })))
+}
+
+## Parse a grpc-accept-encoding header (comma-separated tokens) into
+## { header, encodings, unknown, valid }. Tokens are trimmed + lowercased; order
+## is preserved; valid is true only when every token is supported.
+fn Grpc::parse_accept_encoding ($header) {
+    Grpc::_decode("parse_accept_encoding", grpc__parse_accept_encoding(to_json({ header => $header })))
+}
+
+## Build a grpc-accept-encoding header from an arrayref of $codecs — inverse of
+## parse_accept_encoding. Trims, lowercases, validates, and de-dups (order
+## preserved); an unsupported codec dies. Returns { header, codecs }.
+fn Grpc::build_accept_encoding ($codecs) {
+    die "Grpc::build_accept_encoding: codecs must be arrayref" unless ref($codecs) eq "ARRAY"
+    Grpc::_decode("build_accept_encoding", grpc__build_accept_encoding(to_json({ codecs => $codecs })))
+}
+
+## Resolve a grpc.health.v1.Health serving status by name ("SERVING") or numeric
+## code → { status, name }. The standard health-check enum (UNKNOWN=0, SERVING=1,
+## NOT_SERVING=2, SERVICE_UNKNOWN=3).
+fn Grpc::health_status ($name_or_code) {
+    val $req = ($name_or_code =~ /^\d+$/) ? { status => $name_or_code + 0 } : { name => $name_or_code }
+    Grpc::_decode("health_status", grpc__health_status(to_json($req)))
+}
+

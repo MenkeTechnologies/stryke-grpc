@@ -1462,6 +1462,387 @@ fn op_decode_bin_value(opts: Value) -> Result<Value> {
     Ok(json!({ "encoded": encoded, "value": String::from_utf8_lossy(&bytes).into_owned() }))
 }
 
+/// Parse a `grpc-status` trailer value (the numeric status code carried on the
+/// wire) into `{code, name, valid}`. The trailer is always the integer code, not
+/// the SCREAMING_SNAKE name, so this resolves it back to a name. A code outside
+/// the 0-16 canonical range is reported `valid: false` with `name: null` rather
+/// than erroring — a server can technically send an out-of-range code and the
+/// caller should see it. opts: `code` (or `status`, required). Pure.
+fn op_parse_grpc_status(opts: Value) -> Result<Value> {
+    let code = opts
+        .get("code")
+        .or_else(|| opts.get("status"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("missing code"))?;
+    let name = STATUS_CODES
+        .iter()
+        .find(|(_, c)| i64::from(i32::from(*c)) == code)
+        .map(|(n, _)| *n);
+    Ok(json!({
+        "code": code,
+        "name": name,
+        "valid": name.is_some(),
+    }))
+}
+
+/// Build the gRPC trailer header pair from a status and optional message — the
+/// `grpc-status` (numeric code) plus, when a message is supplied, the
+/// percent-encoded `grpc-message` (via the same codec as `encode_status_message`).
+/// opts: `name` or `code` (required, resolved through the canonical table) and an
+/// optional `message`. Returns `{code, name, grpc_status, grpc_message}` where
+/// `grpc_status` is the string form for the header and `grpc_message` is null
+/// when no message was given. Pure.
+fn op_build_grpc_trailer(opts: Value) -> Result<Value> {
+    let (name, code) = resolve_status(&opts)?;
+    let grpc_message = match opts.get("message").and_then(Value::as_str) {
+        Some(m) => {
+            let enc = op_encode_status_message(json!({ "message": m }))?;
+            enc["encoded"].clone()
+        }
+        None => Value::Null,
+    };
+    Ok(json!({
+        "code": code,
+        "name": name,
+        "grpc_status": code.to_string(),
+        "grpc_message": grpc_message,
+    }))
+}
+
+/// Parse an HTTP/2 `:authority` value (`host[:port]`) into `{host, port}`. An
+/// IPv6 literal host must be bracketed (`[::1]:443`); the brackets are stripped
+/// from `host`. A missing port yields `port: null` (the caller applies its
+/// scheme default). opts: `authority` (or `value`, required). Pure.
+fn op_parse_authority(opts: Value) -> Result<Value> {
+    let authority = opts
+        .get("authority")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing authority"))?;
+    let (host, port): (String, Value) = if let Some(after) = authority.strip_prefix('[') {
+        // Bracketed IPv6 literal: `[addr]` or `[addr]:port`.
+        match after.split_once(']') {
+            Some((addr, tail)) => {
+                let port = tail
+                    .strip_prefix(':')
+                    .and_then(|p| p.parse::<u32>().ok())
+                    .map(|p| json!(p))
+                    .unwrap_or(Value::Null);
+                (addr.to_string(), port)
+            }
+            None => (authority.to_string(), Value::Null),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) if p.parse::<u32>().is_ok() => (h.to_string(), json!(p.parse::<u32>()?)),
+            _ => (authority.to_string(), Value::Null),
+        }
+    };
+    Ok(json!({ "authority": authority, "host": host, "port": port }))
+}
+
+/// Parse a gRPC `user-agent` header into its parts. gRPC implementations send
+/// `grpc-<impl>/<version>` (e.g. `grpc-go/1.62.0`), optionally preceded by a
+/// caller's own product token(s). This lifts the first `grpc-…/…` token into
+/// `{grpc_impl, grpc_version}` and returns everything before it as `custom`
+/// (trimmed, null when absent). A header with no `grpc-` token yields null impl
+/// and the whole value as `custom`. opts: `user_agent` (or `value`, required).
+/// Returns `{user_agent, grpc_impl, grpc_version, custom}`. Pure.
+fn op_parse_user_agent(opts: Value) -> Result<Value> {
+    let ua = opts
+        .get("user_agent")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing user_agent"))?;
+    let grpc_token = ua.split_whitespace().find(|t| t.starts_with("grpc-"));
+    let (grpc_impl, grpc_version): (Value, Value) = match grpc_token {
+        Some(tok) => {
+            let body = tok.strip_prefix("grpc-").unwrap_or(tok);
+            match body.split_once('/') {
+                Some((im, ver)) => (json!(im), json!(ver)),
+                None => (json!(body), Value::Null),
+            }
+        }
+        None => (Value::Null, Value::Null),
+    };
+    let custom = match grpc_token {
+        Some(tok) => {
+            let before = ua.split(tok).next().unwrap_or("").trim();
+            if before.is_empty() {
+                Value::Null
+            } else {
+                json!(before)
+            }
+        }
+        None => json!(ua.trim()),
+    };
+    Ok(json!({
+        "user_agent": ua,
+        "grpc_impl": grpc_impl,
+        "grpc_version": grpc_version,
+        "custom": custom,
+    }))
+}
+
+/// Build a gRPC `user-agent` header from parts — the inverse of
+/// `parse_user_agent`. Emits `grpc-<impl>/<version>` (version omitted when not
+/// given), optionally prefixed by a `custom` product token. opts: `impl`
+/// (required), `version` (optional), `custom` (optional). Returns
+/// `{user_agent, grpc_impl, grpc_version}`. Pure.
+fn op_build_user_agent(opts: Value) -> Result<Value> {
+    let im = opts
+        .get("impl")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing impl"))?;
+    let version = opts
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let custom = opts
+        .get("custom")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let token = match version {
+        Some(v) => format!("grpc-{im}/{v}"),
+        None => format!("grpc-{im}"),
+    };
+    let user_agent = match custom {
+        Some(c) => format!("{c} {token}"),
+        None => token,
+    };
+    Ok(json!({
+        "user_agent": user_agent,
+        "grpc_impl": im,
+        "grpc_version": version,
+    }))
+}
+
+/// Names that gRPC reserves on the wire and an application must NOT use as a
+/// Custom-Metadata key (PROTOCOL-HTTP2): every HTTP/2 pseudo-header (`:method`,
+/// `:scheme`, `:path`, `:authority`, `:status`), the gRPC call headers
+/// (`content-type`, `te`, `user-agent`), and the explicit `grpc-*` set. In
+/// addition, ANY name beginning with `grpc-` is reserved for future gRPC use.
+const RESERVED_METADATA: &[&str] = &[
+    ":method",
+    ":scheme",
+    ":path",
+    ":authority",
+    ":status",
+    "content-type",
+    "te",
+    "user-agent",
+    "grpc-timeout",
+    "grpc-encoding",
+    "grpc-accept-encoding",
+    "grpc-message",
+    "grpc-status",
+    "grpc-status-details-bin",
+    "grpc-message-type",
+];
+
+/// Whether a metadata key is reserved by gRPC and so unusable as application
+/// Custom-Metadata. Matches the explicit reserved set (case-insensitively, since
+/// HTTP/2 names are lowercase) AND the open-ended `grpc-` prefix rule. opts:
+/// `key` (required). Returns `{key, reserved, reason}` (`reason` null when not
+/// reserved). Pure.
+fn op_is_reserved_key(opts: Value) -> Result<Value> {
+    let key = opts
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing key"))?;
+    let lower = key.to_ascii_lowercase();
+    let reason: Option<&str> = if lower.starts_with(':') {
+        Some("HTTP/2 pseudo-headers are reserved")
+    } else if RESERVED_METADATA.contains(&lower.as_str()) {
+        Some("name is reserved by the gRPC protocol")
+    } else if lower.starts_with("grpc-") {
+        Some("the `grpc-` prefix is reserved for gRPC")
+    } else {
+        None
+    };
+    Ok(json!({
+        "key": key,
+        "reserved": reason.is_some(),
+        "reason": reason,
+    }))
+}
+
+/// Split a fully-qualified method into `{full_service, service, package, method}`
+/// — accepting BOTH the path form `/pkg.Service/Method` and the dotted form
+/// `pkg.Service.Method` (the slash is preferred when present). This is the
+/// permissive sibling of `parse_method`, which requires the `/`-delimited path;
+/// it mirrors the cdylib's internal `split_method` so callers can resolve either
+/// notation. opts: `method` (or `path`, required). Pure.
+fn op_split_full_method(opts: Value) -> Result<Value> {
+    let raw = opts
+        .get("method")
+        .or_else(|| opts.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing method"))?;
+    // The path form carries a leading `/`; strip it so `split_method`'s
+    // `split_once('/')` lands on the service/method boundary, not the prefix
+    // (matching `op_parse_method`).
+    let trimmed = raw.strip_prefix('/').unwrap_or(raw);
+    let (full_service, method) = split_method(trimmed)?;
+    if full_service.is_empty() || method.is_empty() {
+        return Err(anyhow!(
+            "method `{raw}` is missing a service or method part"
+        ));
+    }
+    let (package, service) = match full_service.rsplit_once('.') {
+        Some((pkg, svc)) => (json!(pkg), svc.to_string()),
+        None => (Value::Null, full_service.clone()),
+    };
+    Ok(json!({
+        "full_service": full_service,
+        "service": service,
+        "package": package,
+        "method": method,
+    }))
+}
+
+/// The message-encoding (compression) tokens this client supports for the
+/// `grpc-encoding` / `grpc-accept-encoding` headers: `identity` (the always-valid
+/// no-compression token) plus the codecs tonic is built with here
+/// (`gzip`, `deflate`, `zstd`). Pure.
+const COMPRESSION_CODECS: &[&str] = &["identity", "gzip", "deflate", "zstd"];
+
+/// List the compression encodings this client supports for `grpc-encoding` /
+/// `grpc-accept-encoding`. Returns `{codecs}` — `identity` first, then the
+/// tonic-backed codecs. Pure.
+fn op_compression_codecs(_opts: Value) -> Result<Value> {
+    Ok(json!({ "codecs": COMPRESSION_CODECS }))
+}
+
+/// Validate a single `grpc-encoding` token against this client's supported set.
+/// `identity` is always valid (no-op compression); the rest must be one of the
+/// tonic-backed codecs. The check is case-insensitive (HTTP/2 tokens are lower).
+/// opts: `encoding` (or `value`, required). Returns
+/// `{encoding, valid, identity, supported}`. Pure.
+fn op_valid_compression(opts: Value) -> Result<Value> {
+    let encoding = opts
+        .get("encoding")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing encoding"))?;
+    let lower = encoding.to_ascii_lowercase();
+    let valid = COMPRESSION_CODECS.contains(&lower.as_str());
+    Ok(json!({
+        "encoding": encoding,
+        "valid": valid,
+        "identity": lower == "identity",
+        "supported": COMPRESSION_CODECS,
+    }))
+}
+
+/// Parse a `grpc-accept-encoding` header — a comma-separated list of
+/// message-encoding tokens — into `{encodings, unknown, valid}`. Whitespace
+/// around each token is trimmed and tokens are lowercased; `encodings` preserves
+/// input order, `unknown` collects any token outside this client's supported set,
+/// and `valid` is true only when every token is recognized. opts: `header` (or
+/// `value`, required). Pure.
+fn op_parse_accept_encoding(opts: Value) -> Result<Value> {
+    let header = opts
+        .get("header")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing header"))?;
+    let mut encodings = Vec::new();
+    let mut unknown = Vec::new();
+    for tok in header.split(',') {
+        let t = tok.trim().to_ascii_lowercase();
+        if t.is_empty() {
+            continue;
+        }
+        if !COMPRESSION_CODECS.contains(&t.as_str()) {
+            unknown.push(t.clone());
+        }
+        encodings.push(t);
+    }
+    Ok(json!({
+        "header": header,
+        "encodings": encodings,
+        "unknown": unknown,
+        "valid": unknown.is_empty(),
+    }))
+}
+
+/// Build a `grpc-accept-encoding` header from a list of codecs — the inverse of
+/// `parse_accept_encoding`. Each token is trimmed, lowercased, validated against
+/// the supported set, and de-duplicated while preserving first-seen order; an
+/// unsupported token errors. opts: `codecs` (array of strings, required,
+/// non-empty). Returns `{header, codecs}`. Pure.
+fn op_build_accept_encoding(opts: Value) -> Result<Value> {
+    let list = opts
+        .get("codecs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing codecs array"))?;
+    if list.is_empty() {
+        return Err(anyhow!("codecs must be a non-empty array"));
+    }
+    let mut seen = Vec::new();
+    for c in list {
+        let t = c
+            .as_str()
+            .ok_or_else(|| anyhow!("each codec must be a string"))?
+            .trim()
+            .to_ascii_lowercase();
+        if t.is_empty() {
+            return Err(anyhow!("codec must not be empty"));
+        }
+        if !COMPRESSION_CODECS.contains(&t.as_str()) {
+            return Err(anyhow!(
+                "unsupported compression `{t}` (want identity|gzip|deflate|zstd)"
+            ));
+        }
+        if !seen.contains(&t) {
+            seen.push(t);
+        }
+    }
+    Ok(json!({ "header": seen.join(","), "codecs": seen }))
+}
+
+/// The canonical `grpc.health.v1.Health` `ServingStatus` enum, name paired with
+/// its protobuf number (verbatim from `health.proto`).
+const HEALTH_STATUSES: &[(&str, i32)] = &[
+    ("UNKNOWN", 0),
+    ("SERVING", 1),
+    ("NOT_SERVING", 2),
+    ("SERVICE_UNKNOWN", 3),
+];
+
+/// Resolve a `grpc.health.v1.Health` serving status by `name`
+/// (case-insensitive, e.g. "SERVING") or numeric `status`/`code` to its
+/// canonical `{status, name}` pair. This is the standard gRPC health-check enum
+/// (UNKNOWN=0, SERVING=1, NOT_SERVING=2, SERVICE_UNKNOWN=3). opts: `name` or
+/// `status`/`code` (one required). Pure.
+fn op_health_status(opts: Value) -> Result<Value> {
+    if let Some(name) = opts.get("name").and_then(Value::as_str) {
+        let upper = name.to_ascii_uppercase();
+        return HEALTH_STATUSES
+            .iter()
+            .find(|(n, _)| *n == upper)
+            .map(|(n, s)| json!({"status": s, "name": n}))
+            .ok_or_else(|| anyhow!("unknown health serving status name: {name}"));
+    }
+    if let Some(status) = opts
+        .get("status")
+        .or_else(|| opts.get("code"))
+        .and_then(Value::as_i64)
+    {
+        return HEALTH_STATUSES
+            .iter()
+            .find(|(_, s)| i64::from(*s) == status)
+            .map(|(n, s)| json!({"status": s, "name": n}))
+            .ok_or_else(|| anyhow!("unknown health serving status: {status}"));
+    }
+    Err(anyhow!("requires `name` or `status`"))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1609,6 +1990,66 @@ pub extern "C" fn grpc__encode_bin_value(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn grpc__decode_bin_value(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_decode_bin_value(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_grpc_status(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_grpc_status(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__build_grpc_trailer(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_grpc_trailer(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_authority(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_authority(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_user_agent(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_user_agent(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__build_user_agent(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_user_agent(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__is_reserved_key(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_is_reserved_key(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__split_full_method(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_split_full_method(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__compression_codecs(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_compression_codecs(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__valid_compression(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_compression(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__parse_accept_encoding(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_accept_encoding(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__build_accept_encoding(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_accept_encoding(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn grpc__health_status(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_health_status(opts) })
 }
 
 #[cfg(test)]
@@ -2730,5 +3171,257 @@ mod tests {
         assert!(op_decode_bin_value(json!({"encoded": "aG*="})).is_err());
         assert!(op_decode_bin_value(json!({})).is_err());
         assert!(op_encode_bin_value(json!({})).is_err());
+    }
+
+    // ── wire-protocol helper batch ────────────────────────────────────────────
+
+    #[test]
+    fn parse_grpc_status_resolves_code_to_name_and_flags_out_of_range() {
+        // The trailer carries the numeric code; resolve it back to a name.
+        let ok = op_parse_grpc_status(json!({"code": 0})).unwrap();
+        assert_eq!(ok["name"], json!("OK"));
+        assert_eq!(ok["valid"], json!(true));
+        let nf = op_parse_grpc_status(json!({"code": 5})).unwrap();
+        assert_eq!(nf["name"], json!("NOT_FOUND"));
+        // `status` is accepted as an alias for `code`.
+        assert_eq!(
+            op_parse_grpc_status(json!({"status": 14})).unwrap()["name"],
+            json!("UNAVAILABLE")
+        );
+        // Every canonical code (0..=16) resolves to a non-null name.
+        for c in op_status_codes(json!({})).unwrap()["codes"]
+            .as_array()
+            .unwrap()
+        {
+            let code = c["code"].as_i64().unwrap();
+            let p = op_parse_grpc_status(json!({ "code": code })).unwrap();
+            assert_eq!(p["valid"], json!(true), "code {code} resolves");
+        }
+        // Out-of-range: reported invalid with a null name (servers can send junk;
+        // the caller still sees the raw code rather than getting an error).
+        let bad = op_parse_grpc_status(json!({"code": 99})).unwrap();
+        assert_eq!(bad["valid"], json!(false));
+        assert_eq!(bad["name"], Value::Null);
+        assert_eq!(bad["code"], json!(99));
+        assert!(op_parse_grpc_status(json!({})).is_err());
+    }
+
+    #[test]
+    fn build_grpc_trailer_emits_status_and_encoded_message() {
+        // No message → grpc_message is null, grpc_status is the string code.
+        let bare = op_build_grpc_trailer(json!({"name": "NOT_FOUND"})).unwrap();
+        assert_eq!(bare["code"], json!(5));
+        assert_eq!(bare["grpc_status"], json!("5"));
+        assert_eq!(bare["grpc_message"], Value::Null);
+        // With a message → percent-encoded exactly like encode_status_message.
+        let with = op_build_grpc_trailer(json!({"code": 5, "message": "50% off"})).unwrap();
+        assert_eq!(with["name"], json!("NOT_FOUND"));
+        assert_eq!(with["grpc_message"], json!("50%25 off"));
+        // The encoded message round-trips back through decode_status_message.
+        assert_eq!(
+            op_decode_status_message(json!({"encoded": with["grpc_message"]})).unwrap()["message"],
+            json!("50% off")
+        );
+        // Unknown status name errors (resolve_status path).
+        assert!(op_build_grpc_trailer(json!({"name": "NOPE"})).is_err());
+        assert!(op_build_grpc_trailer(json!({})).is_err());
+    }
+
+    #[test]
+    fn parse_authority_splits_host_and_port_including_ipv6() {
+        let p = |s: &str| op_parse_authority(json!({ "authority": s })).unwrap();
+        // host:port.
+        let hp = p("api.example.com:443");
+        assert_eq!(hp["host"], json!("api.example.com"));
+        assert_eq!(hp["port"], json!(443));
+        // Bare host → null port.
+        let bare = p("localhost");
+        assert_eq!(bare["host"], json!("localhost"));
+        assert_eq!(bare["port"], Value::Null);
+        // Bracketed IPv6 with and without a port; brackets stripped from host.
+        let v6 = p("[2607:f8b0::ef]:8080");
+        assert_eq!(v6["host"], json!("2607:f8b0::ef"));
+        assert_eq!(v6["port"], json!(8080));
+        let v6b = p("[::1]");
+        assert_eq!(v6b["host"], json!("::1"));
+        assert_eq!(v6b["port"], Value::Null);
+        // A non-numeric trailing colon segment is part of the host, not a port.
+        let weird = p("svc:notaport");
+        assert_eq!(weird["host"], json!("svc:notaport"));
+        assert_eq!(weird["port"], Value::Null);
+        assert!(op_parse_authority(json!({})).is_err());
+    }
+
+    #[test]
+    fn user_agent_codec_round_trips() {
+        // Bare grpc token.
+        let p = op_parse_user_agent(json!({"user_agent": "grpc-go/1.62.0"})).unwrap();
+        assert_eq!(p["grpc_impl"], json!("go"));
+        assert_eq!(p["grpc_version"], json!("1.62.0"));
+        assert_eq!(p["custom"], Value::Null);
+        // Custom product token preceding the grpc token.
+        let c = op_parse_user_agent(json!({"user_agent": "my-app/2.0 grpc-rust/0.14.0"})).unwrap();
+        assert_eq!(c["grpc_impl"], json!("rust"));
+        assert_eq!(c["grpc_version"], json!("0.14.0"));
+        assert_eq!(c["custom"], json!("my-app/2.0"));
+        // No grpc token → null impl, whole value as custom.
+        let none = op_parse_user_agent(json!({"user_agent": "curl/8.0"})).unwrap();
+        assert_eq!(none["grpc_impl"], Value::Null);
+        assert_eq!(none["custom"], json!("curl/8.0"));
+        // Build inverts: impl + version, with and without custom.
+        assert_eq!(
+            op_build_user_agent(json!({"impl": "go", "version": "1.62.0"})).unwrap()["user_agent"],
+            json!("grpc-go/1.62.0")
+        );
+        assert_eq!(
+            op_build_user_agent(
+                json!({"impl": "rust", "version": "0.14.0", "custom": "my-app/2.0"})
+            )
+            .unwrap()["user_agent"],
+            json!("my-app/2.0 grpc-rust/0.14.0")
+        );
+        // Version omitted → just grpc-<impl>.
+        assert_eq!(
+            op_build_user_agent(json!({"impl": "java"})).unwrap()["user_agent"],
+            json!("grpc-java")
+        );
+        // Round-trip a built header through parse.
+        let built = op_build_user_agent(json!({"impl": "go", "version": "1.0.0"})).unwrap();
+        let back = op_parse_user_agent(json!({"user_agent": built["user_agent"]})).unwrap();
+        assert_eq!(back["grpc_impl"], json!("go"));
+        assert_eq!(back["grpc_version"], json!("1.0.0"));
+        assert!(op_build_user_agent(json!({})).is_err());
+        assert!(op_parse_user_agent(json!({})).is_err());
+    }
+
+    #[test]
+    fn is_reserved_key_matches_protocol_reserved_set() {
+        let r = |k: &str| op_is_reserved_key(json!({ "key": k })).unwrap();
+        // Pseudo-headers.
+        assert_eq!(r(":authority")["reserved"], json!(true));
+        // Explicit reserved names (case-insensitive).
+        assert_eq!(r("content-type")["reserved"], json!(true));
+        assert_eq!(r("Content-Type")["reserved"], json!(true));
+        assert_eq!(r("te")["reserved"], json!(true));
+        assert_eq!(r("user-agent")["reserved"], json!(true));
+        assert_eq!(r("grpc-status")["reserved"], json!(true));
+        assert_eq!(r("grpc-status-details-bin")["reserved"], json!(true));
+        // Any grpc- prefix is reserved, even one not in the explicit list.
+        assert_eq!(r("grpc-internal-future")["reserved"], json!(true));
+        // Ordinary application keys are NOT reserved.
+        assert_eq!(r("x-api-key")["reserved"], json!(false));
+        assert_eq!(r("x-api-key")["reason"], Value::Null);
+        assert_eq!(r("authorization")["reserved"], json!(false));
+        assert!(op_is_reserved_key(json!({})).is_err());
+    }
+
+    #[test]
+    fn split_full_method_accepts_path_and_dotted_forms() {
+        // Path form.
+        let s = op_split_full_method(json!({"method": "/grpc.health.v1.Health/Check"})).unwrap();
+        assert_eq!(s["full_service"], json!("grpc.health.v1.Health"));
+        assert_eq!(s["package"], json!("grpc.health.v1"));
+        assert_eq!(s["service"], json!("Health"));
+        assert_eq!(s["method"], json!("Check"));
+        // Dotted form resolves identically (the permissive sibling of parse_method).
+        let d = op_split_full_method(json!({"method": "grpc.health.v1.Health.Check"})).unwrap();
+        assert_eq!(d["service"], json!("Health"));
+        assert_eq!(d["method"], json!("Check"));
+        // No package → null package, service is the whole thing.
+        let np = op_split_full_method(json!({"method": "Health/Check"})).unwrap();
+        assert_eq!(np["package"], Value::Null);
+        assert_eq!(np["service"], json!("Health"));
+        // Empty halves error (unlike the raw internal split_method which allows them).
+        assert!(op_split_full_method(json!({"method": "noseparator"})).is_err());
+        assert!(op_split_full_method(json!({"method": "/Service/"})).is_err());
+        assert!(op_split_full_method(json!({})).is_err());
+    }
+
+    #[test]
+    fn compression_helpers_track_supported_set() {
+        // The advertised set leads with identity, then the tonic-backed codecs.
+        let codecs = op_compression_codecs(json!({})).unwrap()["codecs"].clone();
+        assert_eq!(codecs, json!(["identity", "gzip", "deflate", "zstd"]));
+        // valid_compression: identity is always valid and flagged.
+        let id = op_valid_compression(json!({"encoding": "identity"})).unwrap();
+        assert_eq!(id["valid"], json!(true));
+        assert_eq!(id["identity"], json!(true));
+        // Case-insensitive recognition of a real codec.
+        assert_eq!(
+            op_valid_compression(json!({"encoding": "GZIP"})).unwrap()["valid"],
+            json!(true)
+        );
+        // snappy is in the gRPC spec but NOT built into this client → invalid.
+        let sn = op_valid_compression(json!({"encoding": "snappy"})).unwrap();
+        assert_eq!(sn["valid"], json!(false));
+        assert_eq!(sn["identity"], json!(false));
+        // Every codec parse_compression accepts is also valid here.
+        for c in ["gzip", "zstd", "deflate"] {
+            assert!(parse_compression(c).is_ok());
+            assert_eq!(
+                op_valid_compression(json!({ "encoding": c })).unwrap()["valid"],
+                json!(true),
+                "{c} valid"
+            );
+        }
+        assert!(op_valid_compression(json!({})).is_err());
+    }
+
+    #[test]
+    fn accept_encoding_codec_round_trips() {
+        // Parse trims, lowercases, preserves order, and collects unknowns.
+        let p = op_parse_accept_encoding(json!({"header": "gzip, IDENTITY ,snappy"})).unwrap();
+        assert_eq!(p["encodings"], json!(["gzip", "identity", "snappy"]));
+        assert_eq!(p["unknown"], json!(["snappy"]));
+        assert_eq!(p["valid"], json!(false));
+        // Empty tokens (trailing comma) are skipped.
+        let e = op_parse_accept_encoding(json!({"header": "gzip,"})).unwrap();
+        assert_eq!(e["encodings"], json!(["gzip"]));
+        assert_eq!(e["valid"], json!(true));
+        // Build validates, lowercases, de-dups while preserving order.
+        let b = op_build_accept_encoding(json!({"codecs": ["GZIP", "identity", "gzip"]})).unwrap();
+        assert_eq!(b["header"], json!("gzip,identity"));
+        assert_eq!(b["codecs"], json!(["gzip", "identity"]));
+        // Round-trip: parse(build(x)) recovers the codec list, all valid.
+        let header = op_build_accept_encoding(json!({"codecs": ["zstd", "deflate"]})).unwrap()
+            ["header"]
+            .clone();
+        let back = op_parse_accept_encoding(json!({ "header": header })).unwrap();
+        assert_eq!(back["encodings"], json!(["zstd", "deflate"]));
+        assert_eq!(back["valid"], json!(true));
+        // Build rejects an unsupported codec and an empty list.
+        assert!(op_build_accept_encoding(json!({"codecs": ["snappy"]})).is_err());
+        assert!(op_build_accept_encoding(json!({"codecs": []})).is_err());
+        assert!(op_build_accept_encoding(json!({})).is_err());
+        assert!(op_parse_accept_encoding(json!({})).is_err());
+    }
+
+    #[test]
+    fn health_status_resolves_by_name_and_number() {
+        // By name (case-insensitive).
+        let s = op_health_status(json!({"name": "SERVING"})).unwrap();
+        assert_eq!(s["status"], json!(1));
+        assert_eq!(s["name"], json!("SERVING"));
+        assert_eq!(
+            op_health_status(json!({"name": "serving"})).unwrap()["status"],
+            json!(1)
+        );
+        // By number, via `status` and the `code` alias.
+        assert_eq!(
+            op_health_status(json!({"status": 2})).unwrap()["name"],
+            json!("NOT_SERVING")
+        );
+        assert_eq!(
+            op_health_status(json!({"code": 3})).unwrap()["name"],
+            json!("SERVICE_UNKNOWN")
+        );
+        assert_eq!(
+            op_health_status(json!({"status": 0})).unwrap()["name"],
+            json!("UNKNOWN")
+        );
+        // Unknown name/number and empty input reject.
+        assert!(op_health_status(json!({"name": "DEGRADED"})).is_err());
+        assert!(op_health_status(json!({"status": 9})).is_err());
+        assert!(op_health_status(json!({})).is_err());
     }
 }

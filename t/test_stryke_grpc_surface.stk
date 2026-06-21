@@ -47,5 +47,17 @@ assert_ok exists &Grpc::encode_status_message, "Grpc::encode_status_message exis
 assert_ok exists &Grpc::decode_status_message, "Grpc::decode_status_message exists"
 assert_ok exists &Grpc::http_status_for, "Grpc::http_status_for exists"
 assert_ok exists &Grpc::grpc_status_for_http, "Grpc::grpc_status_for_http exists"
+assert_ok exists &Grpc::parse_grpc_status, "Grpc::parse_grpc_status exists"
+assert_ok exists &Grpc::build_grpc_trailer, "Grpc::build_grpc_trailer exists"
+assert_ok exists &Grpc::parse_authority, "Grpc::parse_authority exists"
+assert_ok exists &Grpc::parse_user_agent, "Grpc::parse_user_agent exists"
+assert_ok exists &Grpc::build_user_agent, "Grpc::build_user_agent exists"
+assert_ok exists &Grpc::is_reserved_key, "Grpc::is_reserved_key exists"
+assert_ok exists &Grpc::split_full_method, "Grpc::split_full_method exists"
+assert_ok exists &Grpc::compression_codecs, "Grpc::compression_codecs exists"
+assert_ok exists &Grpc::valid_compression, "Grpc::valid_compression exists"
+assert_ok exists &Grpc::parse_accept_encoding, "Grpc::parse_accept_encoding exists"
+assert_ok exists &Grpc::build_accept_encoding, "Grpc::build_accept_encoding exists"
+assert_ok exists &Grpc::health_status, "Grpc::health_status exists"
 
 test_run

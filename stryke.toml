@@ -40,6 +40,18 @@ exports = [
     "grpc__valid_metadata_value",
     "grpc__encode_bin_value",
     "grpc__decode_bin_value",
+    "grpc__parse_grpc_status",
+    "grpc__build_grpc_trailer",
+    "grpc__parse_authority",
+    "grpc__parse_user_agent",
+    "grpc__build_user_agent",
+    "grpc__is_reserved_key",
+    "grpc__split_full_method",
+    "grpc__compression_codecs",
+    "grpc__valid_compression",
+    "grpc__parse_accept_encoding",
+    "grpc__build_accept_encoding",
+    "grpc__health_status",
 ]
 
 [scripts]

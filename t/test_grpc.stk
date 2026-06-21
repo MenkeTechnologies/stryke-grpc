@@ -198,4 +198,74 @@ assert_eq Grpc::decode_bin_value(Grpc::encode_bin_value("the quick brown fox")),
 assert_ok Grpc::valid_metadata_value("trace-bin", Grpc::encode_bin_value("payload"))->{valid}, "encode_bin_value: output passes valid_metadata_value"
 assert_dies fn { Grpc::decode_bin_value("aG*=") }, "decode_bin_value: rejects a non-base64 character"
 
+# parse_grpc_status: numeric trailer code → name (out-of-range stays valid=0, no die).
+val $ps = Grpc::parse_grpc_status(5)
+assert_eq $ps->{name}, "NOT_FOUND", "parse_grpc_status: 5 → NOT_FOUND"
+assert_ok $ps->{valid},            "parse_grpc_status: in-range code is valid"
+assert_eq Grpc::parse_grpc_status(0)->{name}, "OK", "parse_grpc_status: 0 → OK"
+assert_eq Grpc::parse_grpc_status(99)->{valid}, 0, "parse_grpc_status: out-of-range code is invalid (no die)"
+
+# build_grpc_trailer: status + optional message → header pair.
+val $bt = Grpc::build_grpc_trailer("NOT_FOUND")
+assert_eq $bt->{grpc_status}, "5",      "build_grpc_trailer: grpc_status is the string code"
+val $btm = Grpc::build_grpc_trailer(5, "50% off")
+assert_eq $btm->{grpc_message}, "50%25 off", "build_grpc_trailer: message is percent-encoded"
+assert_eq $btm->{name}, "NOT_FOUND",    "build_grpc_trailer: numeric code resolves to name"
+assert_dies fn { Grpc::build_grpc_trailer("NOPE") }, "build_grpc_trailer: rejects unknown status"
+
+# parse_authority: HTTP/2 :authority host[:port], incl. bracketed IPv6.
+val $pa = Grpc::parse_authority("api.example.com:443")
+assert_eq $pa->{host}, "api.example.com", "parse_authority: host"
+assert_eq $pa->{port}, 443,               "parse_authority: port"
+assert_eq Grpc::parse_authority("localhost")->{port}, undef, "parse_authority: bare host has no port"
+val $pa6 = Grpc::parse_authority("[2607:f8b0::ef]:8080")
+assert_eq $pa6->{host}, "2607:f8b0::ef", "parse_authority: ipv6 brackets stripped"
+assert_eq $pa6->{port}, 8080,            "parse_authority: ipv6 port"
+
+# parse_user_agent / build_user_agent: grpc-<impl>/<version> codec.
+val $ua = Grpc::parse_user_agent("my-app/2.0 grpc-rust/0.14.0")
+assert_eq $ua->{grpc_impl},    "rust",      "parse_user_agent: impl"
+assert_eq $ua->{grpc_version}, "0.14.0",     "parse_user_agent: version"
+assert_eq $ua->{custom},       "my-app/2.0", "parse_user_agent: custom prefix"
+assert_eq Grpc::parse_user_agent("curl/8.0")->{grpc_impl}, undef, "parse_user_agent: no grpc token → undef impl"
+assert_eq Grpc::build_user_agent(impl => "go", version => "1.62.0")->{user_agent}, "grpc-go/1.62.0", "build_user_agent: impl + version"
+assert_eq Grpc::build_user_agent(impl => "java")->{user_agent}, "grpc-java", "build_user_agent: version omitted"
+assert_eq Grpc::parse_user_agent(Grpc::build_user_agent(impl => "go", version => "1.0.0")->{user_agent})->{grpc_impl}, "go", "build_user_agent: round-trips through parse"
+assert_dies fn { Grpc::build_user_agent() }, "build_user_agent: requires impl"
+
+# is_reserved_key: gRPC-reserved metadata names.
+assert_ok Grpc::is_reserved_key(":authority")->{reserved}, "is_reserved_key: pseudo-header reserved"
+assert_ok Grpc::is_reserved_key("content-type")->{reserved}, "is_reserved_key: content-type reserved"
+assert_ok Grpc::is_reserved_key("grpc-foo")->{reserved}, "is_reserved_key: any grpc- prefix reserved"
+assert_eq Grpc::is_reserved_key("x-api-key")->{reserved}, 0, "is_reserved_key: application key not reserved"
+
+# split_full_method: path OR dotted form.
+assert_eq Grpc::split_full_method("/grpc.health.v1.Health/Check")->{service}, "Health", "split_full_method: path form service"
+assert_eq Grpc::split_full_method("grpc.health.v1.Health.Check")->{method}, "Check", "split_full_method: dotted form method"
+assert_eq Grpc::split_full_method("/grpc.health.v1.Health/Check")->{package}, "grpc.health.v1", "split_full_method: package"
+assert_dies fn { Grpc::split_full_method("noseparator") }, "split_full_method: rejects an unseparated symbol"
+
+# compression_codecs / valid_compression: this client's supported encodings.
+val @cc = Grpc::compression_codecs()
+assert_eq $cc[0], "identity", "compression_codecs: identity first"
+assert_ok Grpc::valid_compression("gzip")->{valid},     "valid_compression: gzip supported"
+assert_ok Grpc::valid_compression("identity")->{identity}, "valid_compression: identity flag set"
+assert_eq Grpc::valid_compression("snappy")->{valid}, 0, "valid_compression: snappy not built in → invalid"
+
+# parse_accept_encoding / build_accept_encoding: grpc-accept-encoding header.
+val $ae = Grpc::parse_accept_encoding("gzip, IDENTITY ,snappy")
+assert_eq $ae->{encodings}[0], "gzip",     "parse_accept_encoding: order preserved, lowercased"
+assert_eq $ae->{unknown}[0],   "snappy",   "parse_accept_encoding: unknown collected"
+assert_eq $ae->{valid},        0,          "parse_accept_encoding: invalid when an unknown token present"
+assert_eq Grpc::build_accept_encoding(["GZIP", "identity", "gzip"])->{header}, "gzip,identity", "build_accept_encoding: validates, lowercases, de-dups"
+assert_eq Grpc::parse_accept_encoding(Grpc::build_accept_encoding(["zstd", "deflate"])->{header})->{valid}, 1, "build_accept_encoding: round-trips through parse"
+assert_dies fn { Grpc::build_accept_encoding(["snappy"]) }, "build_accept_encoding: rejects an unsupported codec"
+
+# health_status: grpc.health.v1.Health ServingStatus enum.
+assert_eq Grpc::health_status("SERVING")->{status}, 1, "health_status: SERVING is 1"
+assert_eq Grpc::health_status(2)->{name}, "NOT_SERVING", "health_status: 2 → NOT_SERVING"
+assert_eq Grpc::health_status("serving")->{status}, 1, "health_status: case-insensitive name"
+assert_eq Grpc::health_status(3)->{name}, "SERVICE_UNKNOWN", "health_status: 3 → SERVICE_UNKNOWN"
+assert_dies fn { Grpc::health_status("DEGRADED") }, "health_status: rejects unknown status"
+
 test_run

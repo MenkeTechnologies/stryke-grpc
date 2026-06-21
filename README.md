@@ -193,6 +193,18 @@ Grpc::normalize_metadata_key($key) → \%{ key, normalized, changed, binary }   
 Grpc::valid_metadata_value($key, $value) → \%{ key, value, binary, valid, reason }   # value rule by key: -bin → base64 (padded/un-padded), else printable ASCII 0x20-0x7E
 Grpc::encode_bin_value($value)   → $base64             # base64-encode a value's bytes for a -bin key (gRPC wire form)
 Grpc::decode_bin_value($base64)  → $value              # inverse: decode a -bin base64 value back to bytes (padded/un-padded; UTF-8 lossy)
+Grpc::parse_grpc_status($code)   → \%{ code, name, valid }   # numeric grpc-status trailer → name; out-of-range stays valid=0 (no die)
+Grpc::build_grpc_trailer($n_or_c, $message?) → \%{ code, name, grpc_status, grpc_message }   # status (+ optional message) → trailer pair; grpc_message percent-encoded
+Grpc::parse_authority($authority) → \%{ authority, host, port }   # HTTP/2 :authority host[:port] (bracketed IPv6); missing port → undef
+Grpc::parse_user_agent($ua)      → \%{ user_agent, grpc_impl, grpc_version, custom }   # lifts grpc-<impl>/<version>; preceding tokens → custom
+Grpc::build_user_agent(%opts)    → \%{ user_agent, grpc_impl, grpc_version }   # inverse: impl[/version], optional custom prefix → grpc-<impl>/<version>
+Grpc::is_reserved_key($key)      → \%{ key, reserved, reason }   # gRPC-reserved names (:pseudo, content-type/te/user-agent, any grpc- prefix)
+Grpc::split_full_method($method) → \%{ full_service, service, package, method }   # permissive: accepts /pkg.Service/Method OR pkg.Service.Method
+Grpc::compression_codecs()       → @codecs              # supported message-encoding tokens: identity, gzip, deflate, zstd
+Grpc::valid_compression($enc)    → \%{ encoding, valid, identity, supported }   # validate one grpc-encoding token (identity always valid)
+Grpc::parse_accept_encoding($h)  → \%{ header, encodings, unknown, valid }   # comma-separated grpc-accept-encoding → tokens (order kept, unknowns flagged)
+Grpc::build_accept_encoding(\@codecs) → \%{ header, codecs }   # inverse: validate + lowercase + de-dup codecs → grpc-accept-encoding header
+Grpc::health_status($n_or_c)     → \%{ status, name }   # grpc.health.v1.Health ServingStatus (UNKNOWN=0/SERVING=1/NOT_SERVING=2/SERVICE_UNKNOWN=3)
 ```
 
 `$symbol` for `describe` is one of:
@@ -237,8 +249,8 @@ cdylib is dlopened in-process on first `use Grpc` (via stryke's
 RPC surface (`grpc__pkg_version`, `grpc__ping`, `grpc__list`,
 `grpc__describe`, `grpc__call`, `grpc__server_stream`,
 `grpc__client_stream`, `grpc__bidi_stream`) and connection-free helpers
-(`grpc__status_code`, `grpc__status_description`, `grpc__status_codes`, `grpc__http_status_for`, `grpc__parse_method`, `grpc__parse_target`,
-`grpc__build_target`, `grpc__build_method`, `grpc__is_binary_key`, `grpc__valid_metadata_key`, `grpc__normalize_metadata_key`, `grpc__valid_metadata_value`). The authoritative list is
+(`grpc__status_code`, `grpc__status_description`, `grpc__status_codes`, `grpc__http_status_for`, `grpc__grpc_status_for_http`, `grpc__parse_grpc_status`, `grpc__build_grpc_trailer`, `grpc__parse_method`, `grpc__split_full_method`, `grpc__parse_target`,
+`grpc__build_target`, `grpc__build_method`, `grpc__parse_authority`, `grpc__parse_user_agent`, `grpc__build_user_agent`, `grpc__parse_content_type`, `grpc__build_content_type`, `grpc__parse_timeout`, `grpc__build_timeout`, `grpc__is_binary_key`, `grpc__is_reserved_key`, `grpc__valid_metadata_key`, `grpc__normalize_metadata_key`, `grpc__valid_metadata_value`, `grpc__encode_bin_value`, `grpc__decode_bin_value`, `grpc__encode_status_message`, `grpc__decode_status_message`, `grpc__compression_codecs`, `grpc__valid_compression`, `grpc__parse_accept_encoding`, `grpc__build_accept_encoding`, `grpc__health_status`). The authoritative list is
 `[ffi].exports` in
 `stryke.toml`.
 
@@ -296,6 +308,7 @@ dev/canary box (one line for tonic, similar for grpc-go / grpc-java).
 | Per-call deadline (`grpc-timeout`) | ✓ |
 | gzip / zstd / deflate compression | ✓ |
 | Message-size caps + response-metadata capture | ✓ |
+| Connection-free wire helpers (status / trailer / timeout / target / method / metadata / content-type / user-agent / authority / compression / health codecs) | ✓ |
 | `--proto FILE` fallback when reflection is off | open |
 | Unbounded / callback-style streaming for infinite streams | open |
 
