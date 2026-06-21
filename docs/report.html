@@ -110,7 +110,7 @@
         <thead><tr><th>Layer</th><th>Implementation</th></tr></thead>
         <tbody>
           <tr><td>stryke wrappers (<code>lib/*.stk</code>)</td><td>Thin <code>Grpc.stk</code> wrapper (<code>use Grpc</code>); each public fn serializes args to JSON and parses the response</td></tr>
-          <tr><td>cdylib (<code>libstryke_grpc.{dylib,so}</code>)</td><td>Single Rust <code>cdylib</code> crate; entry points (8 RPC verbs + 4 connection-free helpers) exported as <code>extern "C" fn grpc__&lt;verb&gt;(*const c_char) -&gt; *mut c_char</code></td></tr>
+          <tr><td>cdylib (<code>libstryke_grpc.{dylib,so}</code>)</td><td>Single Rust <code>cdylib</code> crate; 46 entry points (8 RPC verbs + 38 connection-free wire helpers) exported as <code>extern "C" fn grpc__&lt;verb&gt;(*const c_char) -&gt; *mut c_char</code> — the authoritative roster is <code>[ffi].exports</code> in <code>stryke.toml</code></td></tr>
           <tr><td>Process model</td><td>Library is <code>dlopen</code>'d once per stryke session on first <code>use Grpc</code>; a shared tokio runtime + <code>tonic::Channel</code> cache per endpoint + <code>DescriptorPool</code> cache per (endpoint, symbol) held in <code>OnceCell</code>; lives until the runtime exits</td></tr>
           <tr><td>Build</td><td>Cargo with <code>[lib] crate-type = ["cdylib"]</code>; <code>publish = false</code>; the package itself ships via <code>s pkg install -g .</code></td></tr>
           <tr><td>Install path</td><td><code>~/.stryke/store/grpc@&lt;version&gt;/</code> after <code>make install</code>; <code>use Grpc</code> from any stryke script resolves it</td></tr>
@@ -135,8 +135,69 @@
 {"error": "&lt;msg&gt;"}        # failure — wrapper die()s with Grpc::&lt;op&gt;: &lt;reason&gt;</pre>
 
       <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">@</span>FFI EXPORT INVENTORY</h2>
+      <p>The cdylib exports 46 <code>grpc__*</code> symbols (the <code>[ffi].exports</code> array in <code>stryke.toml</code>). 8 are RPC verbs that open a channel; the other 38 are pure, connection-free wire helpers that parse / build / validate gRPC HTTP/2 metadata, status, target, timeout, content-type, user-agent, compression, and framing primitives. The <code>Grpc.stk</code> wrapper exposes a matching 46 public <code>Grpc::*</code> functions one-to-one.</p>
+      <table class="arch-table">
+        <thead><tr><th>Family</th><th>Exports</th></tr></thead>
+        <tbody>
+          <tr><td>RPC verbs (open a channel)</td><td><code>grpc__pkg_version</code>, <code>grpc__ping</code>, <code>grpc__list</code>, <code>grpc__describe</code>, <code>grpc__call</code>, <code>grpc__server_stream</code>, <code>grpc__client_stream</code>, <code>grpc__bidi_stream</code></td></tr>
+          <tr><td>Status &amp; trailer</td><td><code>grpc__status_code</code>, <code>grpc__status_description</code>, <code>grpc__status_codes</code>, <code>grpc__http_status_for</code>, <code>grpc__grpc_status_for_http</code>, <code>grpc__parse_grpc_status</code>, <code>grpc__build_grpc_trailer</code>, <code>grpc__encode_status_message</code>, <code>grpc__decode_status_message</code>, <code>grpc__retriable_status</code>, <code>grpc__health_status</code></td></tr>
+          <tr><td>Target &amp; method</td><td><code>grpc__parse_target</code>, <code>grpc__build_target</code>, <code>grpc__parse_method</code>, <code>grpc__build_method</code>, <code>grpc__split_full_method</code>, <code>grpc__parse_authority</code>, <code>grpc__build_authority</code></td></tr>
+          <tr><td>Metadata</td><td><code>grpc__is_binary_key</code>, <code>grpc__is_reserved_key</code>, <code>grpc__is_pseudo_header</code>, <code>grpc__valid_metadata_key</code>, <code>grpc__normalize_metadata_key</code>, <code>grpc__valid_metadata_value</code>, <code>grpc__encode_bin_value</code>, <code>grpc__decode_bin_value</code></td></tr>
+          <tr><td>Content-type, timeout &amp; user-agent</td><td><code>grpc__parse_content_type</code>, <code>grpc__build_content_type</code>, <code>grpc__parse_timeout</code>, <code>grpc__build_timeout</code>, <code>grpc__parse_user_agent</code>, <code>grpc__build_user_agent</code></td></tr>
+          <tr><td>Compression &amp; framing</td><td><code>grpc__compression_codecs</code>, <code>grpc__valid_compression</code>, <code>grpc__parse_accept_encoding</code>, <code>grpc__build_accept_encoding</code>, <code>grpc__frame_message</code>, <code>grpc__unframe_message</code></td></tr>
+        </tbody>
+      </table>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">%</span>REFLECTION PIPELINE</h2>
+      <p>No <code>.proto</code> files live on the client. On every <code>list</code> / <code>describe</code> / <code>call</code>, <code>src/reflection.rs</code> talks to <code>grpc.reflection.v1alpha.ServerReflection</code> to build the descriptor graph at call time:</p>
+      <table class="arch-table">
+        <thead><tr><th>Step</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Open a bidi stream to <code>ServerReflection/ServerReflectionInfo</code></td></tr>
+          <tr><td>2</td><td>Send <code>ListServices</code> (for <code>list</code>) or <code>FileContainingSymbol</code> (for the requested symbol)</td></tr>
+          <tr><td>3</td><td>Follow import chains via <code>FileByFilename</code> until the full <code>FileDescriptorProto</code> graph is loaded</td></tr>
+          <tr><td>4</td><td>Build a <code>prost-reflect</code> <code>DescriptorPool</code>, look up the method, decode the JSON request into a <code>DynamicMessage</code>, encode it, fire the call via tonic's low-level <code>Grpc::unary</code> with a passthrough <code>BytesCodec</code> (<code>src/codec.rs</code>), then decode the response back to JSON</td></tr>
+        </tbody>
+      </table>
+      <p>The <code>grpc.reflection.v1alpha</code> client is generated at build time by <code>build.rs</code> (<code>tonic-prost-build</code> compiling <code>proto/reflection.proto</code>, client-only).</p>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">+</span>DEPENDENCIES</h2>
+      <p>The connector pulls in the tonic / prost / tokio gRPC stack &mdash; the reason it is opt-in rather than linked into core stryke.</p>
+      <table class="arch-table">
+        <thead><tr><th>Crate</th><th>Version</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>tonic</code></td><td>0.14</td><td>gRPC transport / channel / codegen; features <code>tls-ring</code>, <code>tls-native-roots</code>, <code>gzip</code>, <code>zstd</code>, <code>deflate</code></td></tr>
+          <tr><td><code>tonic-prost</code> / <code>prost</code> / <code>prost-types</code></td><td>0.14</td><td>Protobuf codec + well-known types</td></tr>
+          <tr><td><code>prost-reflect</code></td><td>0.16</td><td>Dynamic <code>DescriptorPool</code> / <code>DynamicMessage</code> (feature <code>serde</code>)</td></tr>
+          <tr><td><code>tokio</code> / <code>tokio-stream</code></td><td>1 / 0.1</td><td>Shared multi-thread runtime + stream drains</td></tr>
+          <tr><td><code>serde</code> / <code>serde_json</code></td><td>1</td><td>JSON-over-FFI envelope (<code>preserve_order</code>)</td></tr>
+          <tr><td><code>tonic-prost-build</code></td><td>0.14</td><td>build-dependency: compiles <code>proto/reflection.proto</code></td></tr>
+          <tr><td><code>anyhow</code>, <code>bytes</code>, <code>http</code>, <code>futures-util</code>, <code>once_cell</code>, <code>parking_lot</code></td><td>&mdash;</td><td>Error context, byte buffers, header types, async combinators, cached <code>OnceCell</code> state, locks</td></tr>
+        </tbody>
+      </table>
+      <p>Release profile: <code>opt-level = 3</code>, <code>lto = "thin"</code>, <code>codegen-units = 1</code>, <code>strip = true</code>, <code>panic = "abort"</code>.</p>
+
+      <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">/</span>SCOPE</h2>
-      <p>See the README's <a href="https://github.com/MenkeTechnologies/stryke-grpc#readme">"Why this is a package"</a> + "API reference" sections for the authoritative scope. The package is intentionally narrower than its underlying SDK / driver &mdash; the goal is "useful from a shell pipeline", not "complete API coverage".</p>
+      <p>The package is intentionally narrower than the underlying tonic SDK &mdash; the goal is "useful from a shell pipeline", not "complete API coverage". See the README's <a href="https://github.com/MenkeTechnologies/stryke-grpc#readme">"Why this is a package"</a> + "API reference" sections for the authoritative scope.</p>
+      <table class="arch-table">
+        <thead><tr><th>Capability</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>List services</td><td>shipped</td></tr>
+          <tr><td>Describe service / method / message</td><td>shipped</td></tr>
+          <tr><td>Unary call (JSON in / out)</td><td>shipped</td></tr>
+          <tr><td>Server-, client-, and bidi-streaming (bounded &rarr; JSON arrays)</td><td>shipped</td></tr>
+          <tr><td>TLS + native-roots cert chain; mTLS (client cert) + custom CA root</td><td>shipped</td></tr>
+          <tr><td>ASCII + binary (<code>-bin</code>) metadata; per-call deadline (<code>grpc-timeout</code>)</td><td>shipped</td></tr>
+          <tr><td>gzip / zstd / deflate compression; message-size caps; response-metadata capture</td><td>shipped</td></tr>
+          <tr><td>Connection-free wire helpers (status / trailer / timeout / target / method / metadata / content-type / user-agent / authority / compression / health / framing)</td><td>shipped</td></tr>
+          <tr><td><code>--proto FILE</code> fallback when reflection is off</td><td>open</td></tr>
+          <tr><td>Unbounded / callback-style streaming for infinite streams</td><td>open</td></tr>
+        </tbody>
+      </table>
 
       <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">#</span>PROJECT METADATA</h2>
