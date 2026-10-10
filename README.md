@@ -19,7 +19,7 @@
 Generic, reflection-based gRPC client for stryke — list services,
 describe methods, call unary RPCs with JSON in/out. Like
 [`grpcurl`](https://github.com/fullstorydev/grpcurl) but as a stryke
-package, NDJSON-friendly, and statically linked. Opt-in package tier.
+package, and NDJSON-friendly. Opt-in package tier.
 
 ### [`strykelang`](https://github.com/MenkeTechnologies/strykelang) &middot; [`MenkeTechnologiesMeta`](https://github.com/MenkeTechnologies/MenkeTechnologiesMeta) · [`stryke-aws`](https://github.com/MenkeTechnologies/stryke-aws) · [`stryke-k8s`](https://github.com/MenkeTechnologies/stryke-k8s) · [`stryke-demo`](https://github.com/MenkeTechnologies/stryke-demo)
 
@@ -32,15 +32,14 @@ package, NDJSON-friendly, and statically linked. Opt-in package tier.
 - [\[0x00\] Why this is a package, not a builtin](#0x00-why-this-is-a-package-not-a-builtin)
 - [\[0x01\] Install](#0x01-install)
 - [\[0x02\] Quick start](#0x02-quick-start)
-- [\[0x03\] CLI: `grpc`](#0x03-cli-grpc)
-- [\[0x04\] API reference](#0x04-api-reference)
-- [\[0x05\] FFI layer](#0x05-ffi-layer)
-- [\[0x06\] How reflection works](#0x06-how-reflection-works)
-- [\[0x07\] Scope](#0x07-scope)
-- [\[0x08\] Tests](#0x08-tests)
-- [\[0x09\] Local test server](#0x09-local-test-server)
-- [\[0x0A\] Dev workflow](#0x0a-dev-workflow)
-- [\[0x0B\] Layout](#0x0b-layout)
+- [\[0x03\] API reference](#0x03-api-reference)
+- [\[0x04\] FFI layer](#0x04-ffi-layer)
+- [\[0x05\] How reflection works](#0x05-how-reflection-works)
+- [\[0x06\] Scope](#0x06-scope)
+- [\[0x07\] Tests](#0x07-tests)
+- [\[0x08\] Local test server](#0x08-local-test-server)
+- [\[0x09\] Dev workflow](#0x09-dev-workflow)
+- [\[0x0A\] Layout](#0x0a-layout)
 - [\[0xFF\] License](#0xff-license)
 
 ---
@@ -71,7 +70,7 @@ From a local checkout:
 ```sh
 cd ~/projects/stryke-grpc
 cargo build --release            # ~30s with prost/tonic cache; ~3-5 min cold
-s pkg install -g .               # cdylib lands in ~/.stryke/store/grpc@<version>/
+s pkg install -g .               # cdylib lands in ~/.stryke/store/stryke-grpc@<version>/
 ```
 
 Or:
@@ -128,35 +127,7 @@ Connection options every public fn understands:
 | `headers` | hashref `{k=>v}` or arrayref `["k:v",...]` — sent as gRPC metadata |
 | `timeout_s` | default 30 |
 
-## [0x03] CLI: `grpc`
-
-```sh
-grpc localhost:50051 --plaintext list
-grpc localhost:50051 --plaintext describe helloworld.Greeter
-grpc localhost:50051 --plaintext describe helloworld.Greeter/SayHello
-grpc localhost:50051 --plaintext call helloworld.Greeter/SayHello --data='{"name":"stryke"}'
-
-grpc api.example.com:443 \
-    -H 'authorization: Bearer X' \
-    -H 'x-tenant-id: 7' \
-    call svc.v1.API/Method --data='{"x":1}'
-
-grpc localhost:50051 --plaintext ping
-grpc build                                # cargo build --release
-grpc version
-```
-
-Global flags:
-
-```
---plaintext            HTTP/2 cleartext (no TLS)
---insecure             TLS without verification
---authority HOST       SNI override
--H, --header K:V       repeatable; passed as gRPC metadata
---timeout-s SECS       default: 30
-```
-
-## [0x04] API reference
+## [0x03] API reference
 
 ### `use Grpc`
 
@@ -167,7 +138,7 @@ Grpc::call          $method, $request, %opts → \%response | $scalar | \@array
 Grpc::server_stream $method, $request, %opts → \%{ messages, count }
 Grpc::client_stream $method, \@requests, %opts → \%response
 Grpc::bidi_stream   $method, \@requests, %opts → \%{ messages, count }
-Grpc::ping          %opts → 1 | ""
+Grpc::ping          %opts → 1 | 0
 Grpc::version() → $version_string    # cdylib's CARGO_PKG_VERSION
 ```
 
@@ -247,7 +218,7 @@ replies. `max_messages` caps a drain.
 | `emit_defaults`, `proto_names`, `enum_numbers`, `stringify_64bit` | JSON shaping |
 | `max_messages` | cap a server/bidi stream drain |
 
-## [0x05] FFI layer
+## [0x04] FFI layer
 
 Each `Grpc::*` wrapper builds a JSON args dict and calls a sibling
 `grpc__*` symbol resolved out of `libstryke_grpc.{dylib,so}`. The
@@ -264,25 +235,7 @@ RPC surface (`grpc__pkg_version`, `grpc__ping`, `grpc__list`,
 Errors come back as a `{error}` JSON payload; the stryke wrapper dies
 with `Grpc::<op>: <reason>`.
 
-<details>
-<summary>v1 wire shape (historical helper binary)</summary>
-
-```sh
-stryke-grpc-helper <host:port> [global flags] <subcommand> [args]
-```
-
-Output:
-
-* `list` → NDJSON `{"service": "..."}` rows
-* `describe` → single JSON object (service/method/message info)
-* `call` → single JSON object (decoded response message)
-* `ping` → same as `list`
-
-Errors print to stderr, exit non-zero.
-
-</details>
-
-## [0x06] How reflection works
+## [0x05] How reflection works
 
 On each `list` / `describe` / `call` invocation, the cdylib:
 
@@ -301,7 +254,7 @@ No `.proto` files on disk — everything is fetched at call time.
 If your server hides reflection in production, enable it on a
 dev/canary box (one line for tonic, similar for grpc-go / grpc-java).
 
-## [0x07] Scope
+## [0x06] Scope
 
 | Capability | Status |
 |---|---|
@@ -319,7 +272,7 @@ dev/canary box (one line for tonic, similar for grpc-go / grpc-java).
 | `--proto FILE` fallback when reflection is off | open |
 | Unbounded / callback-style streaming for infinite streams | open |
 
-## [0x08] Tests
+## [0x07] Tests
 
 ```sh
 cargo test                                          # compiles, no live calls
@@ -340,7 +293,7 @@ STRYKE_GRPC_TEST_DATA       JSON payload for the call test (default `{}`)
 The CI workflow brings up a `tonic`-based reflection-enabled echo
 server and exercises list / describe / call against it.
 
-## [0x09] Local test server
+## [0x08] Local test server
 
 The smallest reflection-enabled gRPC server is a few lines of Go or
 Rust. For Rust, the [`tonic`
@@ -351,7 +304,7 @@ For zero-setup smoke testing, public reflection-enabled servers exist
 (grpcb.in's `:9000`), but they come and go — prefer running a local
 server.
 
-## [0x0A] Dev workflow
+## [0x09] Dev workflow
 
 ```sh
 make             # release build
@@ -361,12 +314,12 @@ make install
 make clean
 ```
 
-## [0x0B] Layout
+## [0x0A] Layout
 
 ```
 stryke-grpc/
   stryke.toml                      # stryke package manifest
-  Cargo.toml                       # Rust helper crate manifest
+  Cargo.toml                       # cdylib crate manifest
   Makefile
   build.rs                         # compiles reflection.proto
   proto/
